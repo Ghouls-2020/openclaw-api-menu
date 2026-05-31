@@ -55,6 +55,13 @@ const HELPER_SCRIPT_TEMPLATES = {
 };
 const MENU_VERSION_HISTORY = [
   {
+    version: 'V0.0.1',
+    updatedAt: '2026-06-01',
+    summary: [
+      '配置文件备份名改为短格式: openclaw.json.bak-YYYYMMDD-HHMMSS。',
+    ],
+  },
+  {
     version: 'V0.0.0',
     updatedAt: '2026-05-31',
     summary: [
@@ -271,9 +278,14 @@ function cleanupMenuBackups() {
   }
 }
 
+function formatBackupTimestamp(date = new Date()) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
 function createConfigBackup(tag = 'manual') {
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = `${CONFIG}.bak.${tag}-${timestamp}`;
+  const timestamp = formatBackupTimestamp();
+  const backupPath = `${CONFIG}.bak-${timestamp}`;
   fs.copyFileSync(CONFIG, backupPath);
   return backupPath;
 }
