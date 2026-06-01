@@ -55,6 +55,14 @@ const HELPER_SCRIPT_TEMPLATES = {
 };
 const MENU_VERSION_HISTORY = [
   {
+    version: 'V0.0.3',
+    updatedAt: '2026-06-01',
+    summary: [
+      '配置文件备份名进一步简化为 openclaw.json-YYYYMMDD-HHMMSS。',
+      '删除 --help 页面里的版本历史展示。',
+    ],
+  },
+  {
     version: 'V0.0.2',
     updatedAt: '2026-06-01',
     summary: [
@@ -292,7 +300,7 @@ function formatBackupTimestamp(date = new Date()) {
 
 function createConfigBackup(tag = 'manual') {
   const timestamp = formatBackupTimestamp();
-  const backupPath = `${CONFIG}.bak-${timestamp}`;
+  const backupPath = `${CONFIG}-${timestamp}`;
   fs.copyFileSync(CONFIG, backupPath);
   return backupPath;
 }
@@ -3474,11 +3482,6 @@ async function showMenu() {
       color('功能: 模型切换 / API 增删改 / 模型同步 / 系统升级重启 / 备份卸载', C.dim),
     ], C.cyan));
     console.log('');
-    console.log(color(' 版本历史', C.bold));
-    for (const item of MENU_VERSION_HISTORY) {
-      console.log(`  ${color(item.version, C.cyan, C.bold)}  ${color(item.updatedAt, C.gray)}  ${item.summary.join(';')}`);
-    }
-    console.log('\n');
     console.log(color(' 📖 使用说明', C.bold));
     console.log('  🔹 直接运行:ocapi');
     console.log('  🔹 查看帮助:ocapi --help\n');
