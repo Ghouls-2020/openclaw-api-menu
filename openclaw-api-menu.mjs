@@ -55,6 +55,13 @@ const HELPER_SCRIPT_TEMPLATES = {
 };
 const MENU_VERSION_HISTORY = [
   {
+    version: 'V0.0.2',
+    updatedAt: '2026-06-01',
+    summary: [
+      '删除主菜单版本号详情页，版本项仅保留展示，不再显示历史版本记录。',
+    ],
+  },
+  {
     version: 'V0.0.1',
     updatedAt: '2026-06-01',
     summary: [
@@ -3451,7 +3458,7 @@ async function printMainMenu() {
   console.log(menuItem(18, '彻底卸载 OpenClaw'));
   console.log(menuItem(19, '一键检查 Gateway 故障原因'));
   console.log(color('--------------------', C.gray));
-  console.log(menuItem(20, `版本: ${currentMenuVersion}`));
+  console.log(`20. 版本: ${color(currentMenuVersion, C.white, C.bold)}`);
   console.log(menuItem(21, '检查/修复脚本依赖'));
   console.log(menuItem(22, '快速体检'));
   console.log(color('--------------------', C.gray));
@@ -3532,7 +3539,6 @@ async function showMenu() {
       else if (finalChoice === '17') await uninstallOpenClaw(ask);
       else if (finalChoice === '18') await purgeOpenClaw(ask);
       else if (finalChoice === '19') await diagnoseGatewayQuick(ask);
-      else if (finalChoice === '20') await showScriptVersionDetail(ask);
       else if (finalChoice === '21') await repairHelperScripts(ask);
       else if (finalChoice === '22') await quickHealthcheck(ask);
       else warn('无效选择,请重新输入。');
