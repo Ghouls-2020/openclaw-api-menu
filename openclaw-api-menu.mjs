@@ -12,6 +12,7 @@ const WORKSPACE = path.resolve(__dirname, '..');
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
+const LOCAL_MENU_CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw-api-menu.local.json');
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
@@ -49,6 +50,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.5',
+    updatedAt: '2026-06-04',
+    summary: [
+      '新增本机私有配置 openclaw-api-menu.local.json 的 directChatDisplayName 字段。',
+      '私聊菜单优先显示本机配置的机器人名称,不在 GitHub 脚本中硬编码 Telegram ID 或昵称。',
+    ],
+  },
   {
     version: 'v0.0.4',
     updatedAt: '2026-06-04',
@@ -402,6 +411,36 @@ function getSessionDisplayNameFromTrajectory(entry = {}) {
   return '';
 }
 
+function ensureLocalMenuConfig() {
+  const initial = { directChatDisplayName: '', sessionDisplayNames: {} };
+  try {
+    fs.mkdirSync(path.dirname(LOCAL_MENU_CONFIG), { recursive: true });
+    if (!fs.existsSync(LOCAL_MENU_CONFIG)) {
+      const tmpFile = `${LOCAL_MENU_CONFIG}.${process.pid}.${Date.now()}.tmp`;
+      try {
+        fs.writeFileSync(tmpFile, JSON.stringify(initial, null, 2) + '\n', { mode: 0o600 });
+        fs.renameSync(tmpFile, LOCAL_MENU_CONFIG);
+        fs.chmodSync(LOCAL_MENU_CONFIG, 0o600);
+      } catch (err) {
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+        throw err;
+      }
+    }
+  } catch {}
+  const data = readJson(LOCAL_MENU_CONFIG, initial);
+  return data && typeof data === 'object' && !Array.isArray(data) ? data : initial;
+}
+
+function getDirectChatDisplayName(target) {
+  const localConfig = ensureLocalMenuConfig();
+  const configured = cleanSessionDisplayName(localConfig.directChatDisplayName);
+  if (configured) return configured;
+  const names = localConfig.sessionDisplayNames && typeof localConfig.sessionDisplayNames === 'object'
+    ? localConfig.sessionDisplayNames
+    : {};
+  return cleanSessionDisplayName(names[`telegram:direct:${target}`] || names[`direct:${target}`] || names[String(target)]);
+}
+
 function cleanSessionDisplayName(value) {
   let text = typeof value === 'string' ? value.trim() : '';
   if (!text) return '';
@@ -445,7 +484,8 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
     const [, , , kind, target] = match;
     const friendlyName = getSessionFriendlyName(key, entry);
     if (kind === 'direct') {
-      if (friendlyName && friendlyName !== target) return `TG私聊 【${friendlyName}】`;
+      const directName = getDirectChatDisplayName(target) || friendlyName;
+      if (directName && directName !== target) return `TG私聊 【${directName}】`;
       return `TG私聊用户`;
     }
     if (kind === 'group') {
@@ -686,7 +726,8 @@ function getSessionTargetDisplayName(key, entry = {}) {
   if (!match) return friendlyName || text || '会话';
   const [, kind, target] = match;
   if (kind === 'direct') {
-    if (friendlyName && friendlyName !== target) return friendlyName;
+    const directName = getDirectChatDisplayName(target) || friendlyName;
+    if (directName && directName !== target) return directName;
     return `私聊用户`;
   }
   if (kind === 'group') {
