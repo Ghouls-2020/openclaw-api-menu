@@ -410,8 +410,7 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
     const [, , , kind, target] = match;
     const friendlyName = getSessionFriendlyName(key, entry);
     if (kind === 'direct') {
-      const name = friendlyName || getConfiguredSessionDisplayName(kind, target);
-      if (name && name !== target) return `TG私聊 【${name}】`;
+      if (friendlyName && friendlyName !== target) return `TG私聊 【${friendlyName}】`;
       return `TG私聊用户`;
     }
     if (kind === 'group') {
@@ -653,9 +652,7 @@ function getSessionTargetDisplayName(key, entry = {}) {
   if (!match) return friendlyName || text || '会话';
   const [, kind, target] = match;
   if (kind === 'direct') {
-    const configured = getConfiguredSessionDisplayName(kind, target);
     if (friendlyName && friendlyName !== target) return friendlyName;
-    if (configured && configured !== target) return configured;
     return `私聊用户`;
   }
   if (kind === 'group') {
