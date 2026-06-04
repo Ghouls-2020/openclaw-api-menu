@@ -16,6 +16,7 @@ if (!action || !providerInput || !['check','sync','remove','rename'].includes(ac
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
+const FETCH_TIMEOUT_MS = 15000;
 if (!fs.existsSync(CONFIG)) {
   console.error(`OpenClaw config not found: ${CONFIG}`);
   process.exit(1);
@@ -215,16 +216,23 @@ if (action === 'sync') {
   const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
   const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
   let res;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     res = await fetch(modelsUrl, {
       headers: {
         Authorization: `Bearer ${provider.apiKey}`,
         Accept: 'application/json',
       },
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
   } catch (err) {
+    clearTimeout(timeoutId);
     console.error(`Failed to connect to ${modelsUrl}`);
-    if (err.cause?.code === 'ENOTFOUND') {
+    if (err.name === 'AbortError') {
+      console.error(`请求超时:${FETCH_TIMEOUT_MS}ms，请检查网关或 Base URL。`);
+    } else if (err.cause?.code === 'ENOTFOUND') {
       console.error(`域名解析失败: ${err.cause.hostname}`);
       console.error('请检查 Base URL 是否正确，或检查 DNS/网络连接。');
     } else if (err.cause?.code === 'ECONNREFUSED') {

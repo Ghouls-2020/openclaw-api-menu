@@ -54,6 +54,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.2',
+    updatedAt: '2026-06-04',
+    summary: [
+      '为 add-provider.mjs 和 provider-manage.mjs 的模型列表请求增加 AbortController 超时控制,避免无响应 API 导致脚本永久卡住。',
+      '修复 Telegram Bot API getMe 通过命令行参数传递 botToken 的安全隐患,改为通过子进程 stdin 传递敏感 Token。',
+    ],
+  },
+  {
     version: 'v0.0.1',
     updatedAt: '2026-06-04',
     summary: [
@@ -424,9 +432,13 @@ function getTelegramBotNameFromApi() {
   try {
     const res = spawnSync(process.execPath, [
       '-e',
-      "const url=process.argv[1];fetch(url).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>{console.error(e.message);process.exit(1);})",
-      `https://api.telegram.org/bot${token}/getMe`,
-    ], { encoding: 'utf8', timeout: 8000, maxBuffer: 1024 * 1024 });
+      "let token='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>token+=c);process.stdin.on('end',()=>{token=token.trim();fetch(`https://api.telegram.org/bot${token}/getMe`).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>{console.error(e.message);process.exit(1);});});",
+    ], {
+      input: token,
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 1024 * 1024,
+    });
     if (res.status !== 0) return '';
     const data = JSON.parse(String(res.stdout || '{}'));
     const name = cleanSessionDisplayName(data?.result?.first_name || data?.result?.username || '');
