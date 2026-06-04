@@ -250,8 +250,8 @@ function createConfigBackup(tag = 'manual') {
 }
 
 function parseMenuVersion(version) {
-  const normalized = String(version || '').trim().toUpperCase();
-  if (!/^V\d+(?:\.\d+)*$/.test(normalized)) {
+  const normalized = String(version || '').trim().toLowerCase();
+  if (!/^v\d+(?:\.\d+)*$/.test(normalized)) {
     throw new Error(`菜单版本号格式无效:${version}`);
   }
   return normalized;
