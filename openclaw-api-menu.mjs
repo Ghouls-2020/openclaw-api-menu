@@ -55,6 +55,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.4',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复 ocapi 快捷 alias 未正确转义 node 路径和脚本路径的问题,路径包含空格或单引号时也能正常运行。',
+      '删除未使用的 fetchProviderModelIds 死代码,避免保留无超时 fetch 逻辑。',
+      '删除未使用的 getProviderQuota 死代码,移除 AbortSignal.timeout 带来的旧 Node 兼容性隐患。',
+    ],
+  },
+  {
     version: 'v0.0.3',
     updatedAt: '2026-06-05',
     summary: [
@@ -192,7 +201,8 @@ function ensureOcapiShortcut(options = {}) {
   const { verbose = false } = options;
   if (process.platform === 'win32') return { changed: false, skipped: true, reason: 'Windows 暂不自动写入 shell alias' };
   const bashrc = path.join(os.homedir(), '.bashrc');
-  const aliasLine = `alias ocapi='node ${__filename}'`;
+  const escapeShellSingle = (value) => String(value).replace(/'/g, `'\''`);
+  const aliasLine = `alias ocapi='${escapeShellSingle(process.execPath)} ${escapeShellSingle(__filename)}'`;
   try {
     const current = fs.existsSync(bashrc) ? fs.readFileSync(bashrc, 'utf8') : '';
     if (/^\s*alias\s+ocapi=/m.test(current) || current.includes(aliasLine)) {
@@ -1618,44 +1628,6 @@ function formatProviderStatusForProviderList(status) {
   return latencyText ? `${stateText} | ${latencyText}` : `${stateText}`;
 }
 
-async function getProviderQuota(providerId, provider) {
-
-  if (!provider?.baseUrl || !provider?.apiKey) return { used: 0, total: null, remaining: null, percent: 0 };
-  try {
-    const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
-    // 公益站通用适配,尝试多个常见路径
-    const quotaPaths = [
-      '/v1/dashboard/billing/credit_grants',
-      '/dashboard/billing/credit_grants',
-      '/v1/billing/credit_grants',
-      '/billing/credit_grants',
-      '/v1/usage',
-      '/usage'
-    ];
-    for (const path of quotaPaths) {
-      try {
-        const res = await fetch(`${baseUrl}${path}`, {
-          method: 'GET',
-          headers: { 'Authorization': `Bearer ${provider.apiKey}` },
-          signal: AbortSignal.timeout(2000)
-        });
-        if (res.ok) {
-          const data = await res.json();
-          // 兼容多种返回格式
-          const total = data?.total_granted || data?.total || data?.quota || 500;
-          const used = data?.total_used || data?.used || data?.usage || 0;
-          if (total > 0) {
-            return { used, total, remaining: total - used, percent: Math.min(100, Math.round((used / total) * 100)) };
-          }
-        }
-      } catch {}
-    }
-    return { used: 0, total: null, remaining: null, percent: 0 };
-  } catch {
-    return { used: 0, total: null, remaining: null, percent: 0 };
-  }
-}
-
 function providersState() {
   const state = loadWorkspaceState();
   const cfg = state.cfg;
@@ -1799,30 +1771,6 @@ function normalizeModel(displayName, id) {
     contextWindow: 1048576,
     maxTokens: 128000,
   };
-}
-
-async function fetchProviderModelIds(baseUrlInput, apiKey) {
-  const baseUrl = String(baseUrlInput || '').replace(/\/+$/, '');
-  const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
-  const res = await fetch(modelsUrl, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'application/json',
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    const err = new Error(`Failed to fetch models from ${modelsUrl}: HTTP ${res.status}`);
-    err.detail = text.slice(0, 1000);
-    throw err;
-  }
-  const data = await res.json();
-  const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
-  const ids = [...new Set(rows.map((x) => x?.id).filter(Boolean))];
-  if (!ids.length) {
-    throw new Error('No model IDs found in /models response');
-  }
-  return { ids, modelsUrl };
 }
 
 async function backPrompt(ask) {
