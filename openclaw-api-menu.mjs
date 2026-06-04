@@ -50,6 +50,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.1',
+    updatedAt: '2026-06-04',
+    summary: [
+      '修复 getConfiguredSessionDisplayName 未定义导致的运行时错误。',
+      '修正版本号解析函数使用小写 v。',
+    ],
+  },
+  {
     version: 'v0.0.0',
     updatedAt: '2026-06-04',
     summary: [
