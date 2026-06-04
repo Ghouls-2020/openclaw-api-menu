@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import readline from 'readline';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -53,60 +54,105 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.6',
+    version: 'v0.0.7',
     updatedAt: '2026-06-04',
     summary: [
-      '私聊菜单新增 Telegram Bot API getMe 自动读取机器人名称。',
-      '私聊显示名优先使用 botToken 对应机器人的 first_name,失败时再回退本机 directChatDisplayName/local 昵称配置。',
-    ],
-  },
-  {
-    version: 'v0.0.5',
-    updatedAt: '2026-06-04',
-    summary: [
-      '新增本机私有配置 openclaw-api-menu.local.json 的 directChatDisplayName 字段。',
-      '私聊菜单优先显示本机配置的机器人名称,不在 GitHub 脚本中硬编码 Telegram ID 或昵称。',
-    ],
-  },
-  {
-    version: 'v0.0.4',
-    updatedAt: '2026-06-04',
-    summary: [
-      '修复 getSessionFriendlyName 无法读取 origin.label 导致私聊显示为通用占位符的问题。',
-      '现在会话名称可以正确从 sessions.json 的 origin.label 字段读取。',
-    ],
-  },
-  {
-    version: 'v0.0.3',
-    updatedAt: '2026-06-04',
-    summary: [
-      '修复群聊显示函数调用不存在的 getGroupSessionDisplayName 导致脚本执行失败。',
-      '统一私聊和群聊显示逻辑：只使用 friendlyName，删除所有不存在的辅助函数调用。',
-    ],
-  },
-  {
-    version: 'v0.0.2',
-    updatedAt: '2026-06-04',
-    summary: [
-      '修正备份文件名前缀从大写 V 改为小写 v。',
-      '完善 v0.0.1 版本说明，增加更详细的修复描述。',
+      '清理重新修改版本中的 Telegram ID 和机器人昵称硬编码,避免脚本和 GitHub 仓库泄露隐私。',
+      '私聊显示名改为 A+B 兜底:优先通过 Telegram Bot API getMe 自动读取机器人名称,失败时读取本机 openclaw-api-menu.local.json 配置。',
+      '群聊继续优先显示会话记录中的群名,无名称时显示通用占位符。',
     ],
   },
   {
     version: 'v0.0.1',
-    updatedAt: '2026-06-04',
+    updatedAt: '2026-06-03',
     summary: [
-      '修复会话显示函数调用不存在的 getConfiguredSessionDisplayName 导致脚本执行失败。',
-      '简化私聊/群聊显示逻辑：有友好名称时显示，无友好名称时显示通用占位符（TG私聊用户/TG群聊）。',
-      '修正版本号解析函数 parseMenuVersion 使用小写 v 而非大写 V。',
+      '建立 GitHub 上传规则:这 4 个脚本后续每次修改都递增版本并提交推送。',
+      '主菜单版本号从 v0.0.0 递增到 v0.0.1。',
     ],
   },
   {
     version: 'v0.0.0',
-    updatedAt: '2026-06-04',
+    updatedAt: '2026-06-03',
     summary: [
-      'OpenClaw API 菜单初始版本。',
-      '私聊/群聊无友好名称时显示通用占位符,不暴露任何 Telegram ID。',
+      '修复 provider-manage.mjs 缺少 writeJson 导致重命名 API 失败的问题。',
+      '为 add-provider.mjs 和 provider-manage.mjs 添加友好的 DNS/网络错误提示。',
+    ],
+  },
+  {
+    version: 'v0.0.11',
+    updatedAt: '2026-06-01',
+    summary: [
+      '修复 add-provider.mjs 缺少 writeJson 导致添加 API 失败的问题。',
+      '去掉 add-provider.mjs 里的重复配置备份。',
+    ],
+  },
+  {
+    version: 'V0.0.10',
+    updatedAt: '2026-06-01',
+    summary: [
+      '去掉同步与管理输出里的 Display-name map 提示。',
+      '去掉 Now restart gateway: openclaw gateway restart 提示。',
+    ],
+  },
+  {
+    version: 'V0.0.9',
+    updatedAt: '2026-06-01',
+    summary: [
+      '全部同步时改为只备份一次配置，不再每个 provider 各备份一次。',
+      '去掉同步完成后“需要重启 Gateway 让新模型生效”的追问。',
+    ],
+  },
+  {
+    version: 'V0.0.8',
+    updatedAt: '2026-06-01',
+    summary: [
+      '删除主脚本里 addProviderInline / syncProviderInline / removeProviderInline 的内部实现。',
+      '主脚本现在对这 3 个辅助脚本只保留外部调用，不再保留内部同类代码。',
+    ],
+  },
+  {
+    version: 'V0.0.6',
+    updatedAt: '2026-06-01',
+    summary: [
+      '删除主脚本内嵌的 3 个辅助脚本模板，后续统一只调用外部脚本文件。',
+      '首次运行与 [21] 检查/修复 不再自动补齐 add-provider.mjs、provider-manage.mjs、list-providers-cn.mjs。',
+    ],
+  },
+  {
+    version: 'V0.0.3',
+    updatedAt: '2026-06-01',
+    summary: [
+      '配置文件备份名进一步简化为 openclaw.json-YYYYMMDD-HHMMSS。',
+      '删除 --help 页面里的版本历史展示。',
+    ],
+  },
+  {
+    version: 'V0.0.2',
+    updatedAt: '2026-06-01',
+    summary: [
+      '删除主菜单版本号详情页，版本项仅保留展示，不再显示历史版本记录。',
+    ],
+  },
+  {
+    version: 'V0.0.1',
+    updatedAt: '2026-06-01',
+    summary: [
+      '配置文件备份名改为短格式: openclaw.json.bak-YYYYMMDD-HHMMSS。',
+    ],
+  },
+  {
+    version: 'V0.0.0',
+    updatedAt: '2026-05-31',
+    summary: [
+      '手动将脚本版本号重置为 V0.0.0。',
+    ],
+  },
+  {
+    version: 'V4.9.103',
+    updatedAt: '2026-05-10',
+    summary: [
+      '同步确认页新增 s/默认模型 选项:只改默认模型,不应用到任何 Telegram 会话。',
+      'a/全局切换 恢复为只应用到所有 Telegram 会话,不再同时修改默认模型。',
     ],
   },
 ];
@@ -256,7 +302,7 @@ function getCurrentMenuDisplayVersion() {
 
 function getCurrentMenuVersionInfo() {
   return MENU_VERSION_HISTORY[0] || {
-    version: 'v0.0.0',
+    version: 'V0.0.0',
     updatedAt: '未知',
     summary: ['未填写当前版本摘要'],
   };
@@ -332,7 +378,7 @@ function getMenuBackupEntries() {
       try {
         mtimeMs = fs.statSync(fullPath).mtimeMs;
       } catch {}
-      return { name, fullPath, version: match[1].toUpperCase(), mtimeMs };
+      return { name, fullPath, version: match[1].toLowerCase(), mtimeMs };
     })
     .filter(Boolean)
     .sort((a, b) => compareMenuVersions(b.version, a.version) || (b.mtimeMs - a.mtimeMs));
@@ -421,6 +467,10 @@ function getSessionDisplayNameFromTrajectory(entry = {}) {
   return '';
 }
 
+function hashSecret(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
+}
+
 function ensureLocalMenuConfig() {
   const initial = { directChatDisplayName: '', sessionDisplayNames: {} };
   try {
@@ -450,7 +500,7 @@ function getTelegramBotToken() {
 function getTelegramBotNameFromApi() {
   const token = getTelegramBotToken();
   if (!token) return '';
-  const tokenHash = hashApiKey(token);
+  const tokenHash = hashSecret(token);
   const now = Date.now();
   if (telegramBotNameCache.value && telegramBotNameCache.tokenHash === tokenHash && now - telegramBotNameCache.ts < TELEGRAM_BOT_NAME_CACHE_TTL_MS) {
     return telegramBotNameCache.value;
@@ -469,7 +519,7 @@ function getTelegramBotNameFromApi() {
     telegramBotNameCache.tokenHash = tokenHash;
     telegramBotNameCache.ts = now;
     return name;
-  } catch (e) { _dbg('getTelegramBotNameFromApi', e); }
+  } catch (e) { if (typeof _dbg === 'function') _dbg('getTelegramBotNameFromApi', e); }
   return '';
 }
 
@@ -479,9 +529,7 @@ function getDirectChatDisplayName(target) {
   const localConfig = ensureLocalMenuConfig();
   const configured = cleanSessionDisplayName(localConfig.directChatDisplayName);
   if (configured) return configured;
-  const names = localConfig.sessionDisplayNames && typeof localConfig.sessionDisplayNames === 'object'
-    ? localConfig.sessionDisplayNames
-    : {};
+  const names = localConfig.sessionDisplayNames && typeof localConfig.sessionDisplayNames === 'object' ? localConfig.sessionDisplayNames : {};
   return cleanSessionDisplayName(names[`telegram:direct:${target}`] || names[`direct:${target}`] || names[String(target)]);
 }
 
@@ -495,11 +543,9 @@ function cleanSessionDisplayName(value) {
 
 function getSessionFriendlyName(key, entry = {}) {
   const metadata = entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {};
-  const origin = entry.origin && typeof entry.origin === 'object' ? entry.origin : {};
   const directFields = [
     entry.subject,
     entry.label,
-    origin.label,
     metadata.label,
     metadata.subject,
     entry.title,
@@ -536,11 +582,10 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
       if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】`;
       return `TG群聊`;
     }
-    const slashName = friendlyName || '会话';
-    return `TG Slash【${slashName}】`;
+    return `TG Slash【${friendlyName || target}】`;
   }
-  if (entry.kind) return `${entry.kind}【${getSessionFriendlyName(key, entry) || '会话'}】`;
-  return getSessionFriendlyName(key, entry) || '会话';
+  if (entry.kind) return `${entry.kind}【${getSessionFriendlyName(key, entry) || text}】`;
+  return getSessionFriendlyName(key, entry) || text;
 }
 
 function formatSessionModelLabel(entry = {}) {
@@ -772,13 +817,13 @@ function getSessionTargetDisplayName(key, entry = {}) {
   if (kind === 'direct') {
     const directName = getDirectChatDisplayName(target) || friendlyName;
     if (directName && directName !== target) return directName;
-    return `私聊用户`;
+    return '私聊用户';
   }
   if (kind === 'group') {
     if (friendlyName && friendlyName !== target) return friendlyName;
-    return `群聊`;
+    return '群聊';
   }
-  return friendlyName || target;
+  return friendlyName || target || '会话';
 }
 
 function describeSessionTargets(sessionKeys = []) {
