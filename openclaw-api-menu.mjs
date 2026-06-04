@@ -50,6 +50,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.3',
+    updatedAt: '2026-06-04',
+    summary: [
+      '修复群聊显示函数调用不存在的 getGroupSessionDisplayName 导致脚本执行失败。',
+      '统一私聊和群聊显示逻辑：只使用 friendlyName，删除所有不存在的辅助函数调用。',
+    ],
+  },
+  {
     version: 'v0.0.2',
     updatedAt: '2026-06-04',
     summary: [
@@ -431,8 +439,7 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
       return `TG私聊用户`;
     }
     if (kind === 'group') {
-      const name = getGroupSessionDisplayName(entry);
-      if (name && name !== target) return `TG群聊 【${name}】`;
+      if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】`;
       return `TG群聊`;
     }
     const slashName = friendlyName || '会话';
@@ -673,8 +680,7 @@ function getSessionTargetDisplayName(key, entry = {}) {
     return `私聊用户`;
   }
   if (kind === 'group') {
-    const name = getGroupSessionDisplayName(entry);
-    if (name && name !== target) return name;
+    if (friendlyName && friendlyName !== target) return friendlyName;
     return `群聊`;
   }
   return friendlyName || target;
