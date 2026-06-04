@@ -13,6 +13,8 @@ const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
 const LOCAL_MENU_CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw-api-menu.local.json');
+const TELEGRAM_BOT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
@@ -50,6 +52,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.6',
+    updatedAt: '2026-06-04',
+    summary: [
+      '私聊菜单新增 Telegram Bot API getMe 自动读取机器人名称。',
+      '私聊显示名优先使用 botToken 对应机器人的 first_name,失败时再回退本机 directChatDisplayName/local 昵称配置。',
+    ],
+  },
   {
     version: 'v0.0.5',
     updatedAt: '2026-06-04',
@@ -431,7 +441,41 @@ function ensureLocalMenuConfig() {
   return data && typeof data === 'object' && !Array.isArray(data) ? data : initial;
 }
 
+function getTelegramBotToken() {
+  const cfg = readJson(CONFIG, {});
+  const token = cfg?.channels?.telegram?.botToken || cfg?.plugins?.entries?.telegram?.botToken || '';
+  return typeof token === 'string' ? token.trim() : '';
+}
+
+function getTelegramBotNameFromApi() {
+  const token = getTelegramBotToken();
+  if (!token) return '';
+  const tokenHash = hashApiKey(token);
+  const now = Date.now();
+  if (telegramBotNameCache.value && telegramBotNameCache.tokenHash === tokenHash && now - telegramBotNameCache.ts < TELEGRAM_BOT_NAME_CACHE_TTL_MS) {
+    return telegramBotNameCache.value;
+  }
+  try {
+    const res = spawnSync(process.execPath, [
+      '-e',
+      "const url=process.argv[1];fetch(url).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>{console.error(e.message);process.exit(1);})",
+      `https://api.telegram.org/bot${token}/getMe`,
+    ], { encoding: 'utf8', timeout: 8000, maxBuffer: 1024 * 1024 });
+    if (res.status !== 0) return '';
+    const data = JSON.parse(String(res.stdout || '{}'));
+    const name = cleanSessionDisplayName(data?.result?.first_name || data?.result?.username || '');
+    if (!data?.ok || !name) return '';
+    telegramBotNameCache.value = name;
+    telegramBotNameCache.tokenHash = tokenHash;
+    telegramBotNameCache.ts = now;
+    return name;
+  } catch (e) { _dbg('getTelegramBotNameFromApi', e); }
+  return '';
+}
+
 function getDirectChatDisplayName(target) {
+  const botName = getTelegramBotNameFromApi();
+  if (botName) return botName;
   const localConfig = ensureLocalMenuConfig();
   const configured = cleanSessionDisplayName(localConfig.directChatDisplayName);
   if (configured) return configured;
