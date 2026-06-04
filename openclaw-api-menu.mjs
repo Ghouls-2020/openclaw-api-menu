@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.5',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复技能目录写死 /root 路径的问题,改为基于当前用户 home 目录解析。',
+      '修改 Provider 英文 ID 时增加合法性校验,只允许字母、数字、下划线和短横线。',
+    ],
+  },
+  {
     version: 'v0.0.4',
     updatedAt: '2026-06-05',
     summary: [
@@ -1029,7 +1037,7 @@ function backupConfig(tag = 'manual') {
 }
 
 function getWorkspaceSkillsDir() {
-  return path.join('/root/.openclaw/workspace', 'skills');
+  return path.join(os.homedir(), '.openclaw', 'workspace', 'skills');
 }
 
 function normalizeSkillDescription(skillName, rawDescription = '') {
@@ -1682,6 +1690,10 @@ function runNode(script, args = [], options = {}) {
   return typeof res.status === 'number' ? res.status : 1;
 }
 
+function isValidProviderId(value) {
+  return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
+}
+
 function resolveProviderKey(input, providers, displayNames) {
   if (!input) return null;
   if (providers[input]) return input;
@@ -2223,6 +2235,10 @@ async function modifyProvider(ask) {
         console.log('');
         const input = await ask(color(`当前英文 ID: ${row.id}\n请输入新的英文 ID(直接回车保持不变): `, C.bold));
         newProviderId = input.trim() ? input.trim() : row.id;
+        if (!isValidProviderId(newProviderId)) {
+          warn('英文 ID 格式无效,只能包含字母、数字、下划线(_)和短横线(-)。');
+          continue;
+        }
       }
       if (action === '2' || action === '5') {
         console.log('');
