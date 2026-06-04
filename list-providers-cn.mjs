@@ -23,6 +23,22 @@ const C = {
 
 const color = (s, ...styles) => styles.join('') + s + C.reset;
 
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let next = 0;
+  const size = Math.min(Math.max(1, limit), items.length || 1);
+
+  async function runOne() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: size }, () => runOne()));
+  return results;
+}
+
 function readJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
@@ -109,10 +125,10 @@ const rows = Object.entries(rawProviders).map(([id, provider]) => {
 
 console.log(color('正在检测所有API状态，请稍等...', C.blue));
 const statusMap = new Map();
-for (const row of rows) {
+await mapWithConcurrency(rows, 3, async (row) => {
   const status = await detectProviderStatus(row.provider);
   statusMap.set(row.id, status);
-}
+});
 
 rows.forEach((row, idx) => {
   const status = statusMap.get(row.id) || {};

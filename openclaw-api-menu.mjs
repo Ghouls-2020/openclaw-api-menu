@@ -54,6 +54,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.1',
+    updatedAt: '2026-06-04',
+    summary: [
+      '优化 list-providers-cn.mjs 的 API 状态检测,从串行检测改为有限并发检测。',
+      '新增 mapWithConcurrency 并发控制,默认同时检测 3 个 Provider,减少多个离线 API 导致的长时间等待。',
+    ],
+  },
+  {
     version: 'v0.0.0',
     updatedAt: '2026-06-04',
     summary: [
