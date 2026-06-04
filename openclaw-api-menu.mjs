@@ -50,11 +50,20 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.2',
+    updatedAt: '2026-06-04',
+    summary: [
+      '修正备份文件名前缀从大写 V 改为小写 v。',
+      '完善 v0.0.1 版本说明，增加更详细的修复描述。',
+    ],
+  },
+  {
     version: 'v0.0.1',
     updatedAt: '2026-06-04',
     summary: [
-      '修复 getConfiguredSessionDisplayName 未定义导致的运行时错误。',
-      '修正版本号解析函数使用小写 v。',
+      '修复会话显示函数调用不存在的 getConfiguredSessionDisplayName 导致脚本执行失败。',
+      '简化私聊/群聊显示逻辑：有友好名称时显示，无友好名称时显示通用占位符（TG私聊用户/TG群聊）。',
+      '修正版本号解析函数 parseMenuVersion 使用小写 v 而非大写 V。',
     ],
   },
   {
@@ -66,7 +75,7 @@ const MENU_VERSION_HISTORY = [
     ],
   },
 ];
-const MENU_BACKUP_PREFIX = 'openclaw-api-menu.mjs-V';
+const MENU_BACKUP_PREFIX = 'openclaw-api-menu.mjs-v';
 const MENU_BACKUP_DIR = path.join(__dirname, 'openclaw-api-menu-backups');
 const providerStatusCache = new Map();
 const menuRuntimeCache = {
