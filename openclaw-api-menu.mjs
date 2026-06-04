@@ -204,7 +204,7 @@ function getCurrentMenuDisplayVersion() {
 
 function getCurrentMenuVersionInfo() {
   return MENU_VERSION_HISTORY[0] || {
-    version: 'V0.0.0',
+    version: 'v0.0.0',
     updatedAt: '未知',
     summary: ['未填写当前版本摘要'],
   };
