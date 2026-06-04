@@ -22,13 +22,28 @@ if (!providerName || !baseUrlRaw || !apiKey) {
   process.exit(1);
 }
 
-const baseUrl = baseUrlRaw.replace(/\/+$/, '');
+const baseUrl = normalizeAndValidateBaseUrl(baseUrlRaw);
+if (!baseUrl) {
+  console.error('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
+  process.exit(1);
+}
 const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
 
 if (!fs.existsSync(CONFIG)) {
   console.error(`OpenClaw config not found: ${CONFIG}`);
   console.error('Run OpenClaw at least once first so openclaw.json exists.');
   process.exit(1);
+}
+
+function normalizeAndValidateBaseUrl(value) {
+  const text = String(value || '').trim();
+  try {
+    const url = new URL(text);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return text.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
 }
 
 function ensureJsonFile(file, fallback) {

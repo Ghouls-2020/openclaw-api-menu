@@ -15,6 +15,7 @@ const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
 const LOCAL_MENU_CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw-api-menu.local.json');
 const TELEGRAM_BOT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
@@ -53,6 +54,16 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.3',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复 JSON 解析失败时静默覆盖本地文件的风险,损坏文件会先备份为 corrupt 文件再重置,OpenClaw 主配置损坏时会停止继续运行。',
+      'Telegram Bot API getMe 改为当前进程内异步 fetch + AbortController,不再启动同步子进程阻塞 UI。',
+      '为 mapWithConcurrency 增加 worker 异常兜底,单个任务失败不会炸毁整个并发队列。',
+      '添加 Base URL 输入校验,要求使用 http:// 或 https:// 开头的完整 URL。',
+    ],
+  },
   {
     version: 'v0.0.2',
     updatedAt: '2026-06-04',
@@ -421,7 +432,7 @@ function getTelegramBotToken() {
   return typeof token === 'string' ? token.trim() : '';
 }
 
-function getTelegramBotNameFromApi() {
+function getCachedTelegramBotName() {
   const token = getTelegramBotToken();
   if (!token) return '';
   const tokenHash = hashSecret(token);
@@ -429,30 +440,38 @@ function getTelegramBotNameFromApi() {
   if (telegramBotNameCache.value && telegramBotNameCache.tokenHash === tokenHash && now - telegramBotNameCache.ts < TELEGRAM_BOT_NAME_CACHE_TTL_MS) {
     return telegramBotNameCache.value;
   }
+  return '';
+}
+
+async function refreshTelegramBotNameFromApi() {
+  const token = getTelegramBotToken();
+  if (!token) return '';
+  const tokenHash = hashSecret(token);
+  const cached = getCachedTelegramBotName();
+  if (cached) return cached;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS);
   try {
-    const res = spawnSync(process.execPath, [
-      '-e',
-      "let token='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>token+=c);process.stdin.on('end',()=>{token=token.trim();fetch(`https://api.telegram.org/bot${token}/getMe`).then(r=>r.text()).then(t=>process.stdout.write(t)).catch(e=>{console.error(e.message);process.exit(1);});});",
-    ], {
-      input: token,
-      encoding: 'utf8',
-      timeout: 8000,
-      maxBuffer: 1024 * 1024,
-    });
-    if (res.status !== 0) return '';
-    const data = JSON.parse(String(res.stdout || '{}'));
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: controller.signal });
+    const text = await res.text().catch(() => '');
+    clearTimeout(timeoutId);
+    if (!res.ok) return '';
+    const data = JSON.parse(text || '{}');
     const name = cleanSessionDisplayName(data?.result?.first_name || data?.result?.username || '');
     if (!data?.ok || !name) return '';
     telegramBotNameCache.value = name;
     telegramBotNameCache.tokenHash = tokenHash;
-    telegramBotNameCache.ts = now;
+    telegramBotNameCache.ts = Date.now();
     return name;
-  } catch (e) { if (typeof _dbg === 'function') _dbg('getTelegramBotNameFromApi', e); }
-  return '';
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (typeof _dbg === 'function') _dbg('refreshTelegramBotNameFromApi', e);
+    return '';
+  }
 }
 
 function getDirectChatDisplayName(target) {
-  const botName = getTelegramBotNameFromApi();
+  const botName = getCachedTelegramBotName();
   if (botName) return botName;
   const localConfig = ensureLocalMenuConfig();
   const configured = cleanSessionDisplayName(localConfig.directChatDisplayName);
@@ -645,6 +664,7 @@ function sortTelegramSessionsForMenu(rows = []) {
 }
 
 async function confirmSyncTelegramSessions(ask, ref) {
+  await refreshTelegramBotNameFromApi();
   while (true) {
     const { rows: rawRows } = listSyncableTelegramSessions(30);
     const rows = sortTelegramSessionsForMenu(rawRows);
@@ -898,16 +918,25 @@ function ensureJsonFile(file, fallback, options = {}) {
       if (verbose) info(`首次使用:已自动创建 ${label}`);
       return initial;
     }
+    let parsed;
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (Array.isArray(fallback)) {
-        if (Array.isArray(parsed)) return parsed;
-      } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed;
-      }
-    } catch {}
+      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch (err) {
+      const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      try { fs.copyFileSync(file, corruptPath); } catch {}
+      if (verbose) warn(`${label} 内容不是合法 JSON,已备份为:${path.basename(corruptPath)},并重置为默认结构。`);
+      fs.writeFileSync(file, JSON.stringify(initial, null, 2) + '\n');
+      return initial;
+    }
+    if (Array.isArray(fallback)) {
+      if (Array.isArray(parsed)) return parsed;
+    } else if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed;
+    }
+    const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try { fs.copyFileSync(file, corruptPath); } catch {}
     fs.writeFileSync(file, JSON.stringify(initial, null, 2) + '\n');
-    if (verbose) warn(`${label} 内容无效,已自动重置为默认结构。`);
+    if (verbose) warn(`${label} 结构无效,已备份为:${path.basename(corruptPath)},并重置为默认结构。`);
     return initial;
   } catch (err) {
     if (verbose) danger(`处理 ${label} 失败:${err.message}`);
@@ -922,22 +951,47 @@ function writeJson(file, data) {
 
 function ensureConfigSkeleton() {
   let created = false;
-  let cfg = readJson(CONFIG, null);
-  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+  let corrupted = false;
+  let cfg;
+  if (!fs.existsSync(CONFIG)) {
     cfg = {};
-    created = !fs.existsSync(CONFIG);
+    created = true;
+  } else {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        corrupted = true;
+        cfg = null;
+      } else {
+        cfg = parsed;
+      }
+    } catch {
+      corrupted = true;
+      cfg = null;
+    }
   }
+  if (corrupted) return { cfg: null, created: false, corrupted: true };
   if (!cfg.models || typeof cfg.models !== 'object' || Array.isArray(cfg.models)) cfg.models = {};
   if (!cfg.models.providers || typeof cfg.models.providers !== 'object' || Array.isArray(cfg.models.providers)) cfg.models.providers = {};
   if (!cfg.agents || typeof cfg.agents !== 'object' || Array.isArray(cfg.agents)) cfg.agents = {};
   if (!cfg.agents.defaults || typeof cfg.agents.defaults !== 'object' || Array.isArray(cfg.agents.defaults)) cfg.agents.defaults = {};
   if (!cfg.agents.defaults.models || typeof cfg.agents.defaults.models !== 'object' || Array.isArray(cfg.agents.defaults.models)) cfg.agents.defaults.models = {};
-  return { cfg, created };
+  return { cfg, created, corrupted: false };
 }
 
 function loadWorkspaceState(options = {}) {
   const { verbose = false } = options;
   const ensured = ensureConfigSkeleton();
+  if (ensured.corrupted) {
+    return {
+      ok: false,
+      cfg: null,
+      displayNames: ensureJsonFile(DISPLAY_NAMES, {}, { label: 'provider-display-names.json', verbose }),
+      recentModels: ensureJsonFile(RECENT_MODELS, [], { label: 'recent-models.json', verbose }),
+      reason: `OpenClaw 主配置文件不是合法 JSON:${CONFIG}`,
+      hint: '请先修复 openclaw.json,或从同目录 openclaw.json-* 备份恢复。菜单不会覆盖损坏的主配置。',
+    };
+  }
   if (ensured.created) {
     return {
       ok: false,
@@ -1066,7 +1120,11 @@ async function mapWithConcurrency(items, limit, worker) {
       const current = nextIndex;
       nextIndex += 1;
       if (current >= items.length) return;
-      results[current] = await worker(items[current], current);
+      try {
+        results[current] = await worker(items[current], current);
+      } catch (err) {
+        results[current] = { error: err };
+      }
     }
   }
 
@@ -1945,6 +2003,17 @@ async function switchDefaultModel(ask) {
   }
 }
 
+function normalizeAndValidateBaseUrl(value) {
+  const text = String(value || '').trim();
+  try {
+    const url = new URL(text);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return text.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 async function addProvider(ask) {
   renderScreenTitle('添加 API');
   const state = loadWorkspaceState({ verbose: true });
@@ -1957,8 +2026,10 @@ async function addProvider(ask) {
   const providerName = await ask(color('输入 provider id（英文，唯一）：', C.bold));
   if (!providerName) return info('操作已取消。');
   const displayName = await ask(color('输入显示名称（中文可填，直接回车则同 provider id）：', C.bold)) || providerName;
-  const baseUrl = await ask(color('输入 Base URL（例如 https://api.example.com/v1）：', C.bold));
-  if (!baseUrl) return warn('Base URL 不能为空。');
+  const baseUrlInput = await ask(color('输入 Base URL（例如 https://api.example.com/v1）：', C.bold));
+  if (!baseUrlInput) return warn('Base URL 不能为空。');
+  const baseUrl = normalizeAndValidateBaseUrl(baseUrlInput);
+  if (!baseUrl) return warn('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
   const apiKey = await ask(color('输入 API Key：', C.bold));
   if (!apiKey) return warn('API Key 不能为空。');
   const helperPath = path.join(__dirname, 'add-provider.mjs');

@@ -31,7 +31,11 @@ async function mapWithConcurrency(items, limit, worker) {
   async function runOne() {
     while (next < items.length) {
       const index = next++;
-      results[index] = await worker(items[index], index);
+      try {
+        results[index] = await worker(items[index], index);
+      } catch (err) {
+        results[index] = { error: err };
+      }
     }
   }
 

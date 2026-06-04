@@ -22,6 +22,17 @@ if (!fs.existsSync(CONFIG)) {
   process.exit(1);
 }
 
+function normalizeAndValidateBaseUrl(value) {
+  const text = String(value || '').trim();
+  try {
+    const url = new URL(text);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    return text.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
 function ensureJsonFile(file, fallback) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   if (!fs.existsSync(file)) {
@@ -213,7 +224,11 @@ if (action === 'sync') {
     console.error(`Provider ${providerName} is missing baseUrl or apiKey in config`);
     process.exit(3);
   }
-  const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
+  const baseUrl = normalizeAndValidateBaseUrl(provider.baseUrl);
+  if (!baseUrl) {
+    console.error('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
+    process.exit(4);
+  }
   const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
   let res;
   const controller = new AbortController();
