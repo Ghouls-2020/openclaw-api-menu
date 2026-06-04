@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.0.1'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: vars
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release notes from menu history
+        id: notes
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const tag = process.env.RELEASE_TAG;
+          const source = fs.readFileSync('openclaw-api-menu.mjs', 'utf8');
+          const historyMatch = source.match(/const MENU_VERSION_HISTORY = (\[[\s\S]*?\n\]);/);
+          let body = '';
+          if (historyMatch) {
+            try {
+              const history = Function(`"use strict"; return (${historyMatch[1]});`)();
+              const item = history.find((entry) => String(entry.version).toLowerCase() === String(tag).toLowerCase());
+              if (item) {
+                const lines = [];
+                lines.push(`## ${item.version}`);
+                if (item.updatedAt) lines.push(``);
+                if (item.updatedAt) lines.push(`更新时间：${item.updatedAt}`);
+                lines.push(``);
+                lines.push(`### 更新说明`);
+                for (const text of item.summary || []) lines.push(`- ${text}`);
+                body = lines.join('\n');
+              }
+            } catch (err) {
+              body = `## ${tag}\n\n自动读取版本说明失败：${err.message}`;
+            }
+          }
+          if (!body) body = `## ${tag}\n\n本次版本说明未在 MENU_VERSION_HISTORY 中找到。`;
+          fs.writeFileSync('RELEASE_NOTES.md', body + '\n');
+          NODE
+        env:
+          RELEASE_TAG: ${{ steps.vars.outputs.tag }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.tag }}
+          body_path: RELEASE_NOTES.md
