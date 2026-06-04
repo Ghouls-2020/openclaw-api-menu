@@ -54,105 +54,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.7',
+    version: 'v0.0.0',
     updatedAt: '2026-06-04',
     summary: [
-      '清理重新修改版本中的 Telegram ID 和机器人昵称硬编码,避免脚本和 GitHub 仓库泄露隐私。',
-      '私聊显示名改为 A+B 兜底:优先通过 Telegram Bot API getMe 自动读取机器人名称,失败时读取本机 openclaw-api-menu.local.json 配置。',
+      '重置为 v0.0.0 初始版本。',
+      '清理 Telegram ID 和机器人昵称硬编码,脚本中不包含私人 ID 或昵称。',
+      '私聊显示名使用 A+B 兜底:优先通过 Telegram Bot API getMe 自动读取机器人名称,失败时读取本机 openclaw-api-menu.local.json 配置。',
       '群聊继续优先显示会话记录中的群名,无名称时显示通用占位符。',
-    ],
-  },
-  {
-    version: 'v0.0.1',
-    updatedAt: '2026-06-03',
-    summary: [
-      '建立 GitHub 上传规则:这 4 个脚本后续每次修改都递增版本并提交推送。',
-      '主菜单版本号从 v0.0.0 递增到 v0.0.1。',
-    ],
-  },
-  {
-    version: 'v0.0.0',
-    updatedAt: '2026-06-03',
-    summary: [
-      '修复 provider-manage.mjs 缺少 writeJson 导致重命名 API 失败的问题。',
-      '为 add-provider.mjs 和 provider-manage.mjs 添加友好的 DNS/网络错误提示。',
-    ],
-  },
-  {
-    version: 'v0.0.11',
-    updatedAt: '2026-06-01',
-    summary: [
-      '修复 add-provider.mjs 缺少 writeJson 导致添加 API 失败的问题。',
-      '去掉 add-provider.mjs 里的重复配置备份。',
-    ],
-  },
-  {
-    version: 'V0.0.10',
-    updatedAt: '2026-06-01',
-    summary: [
-      '去掉同步与管理输出里的 Display-name map 提示。',
-      '去掉 Now restart gateway: openclaw gateway restart 提示。',
-    ],
-  },
-  {
-    version: 'V0.0.9',
-    updatedAt: '2026-06-01',
-    summary: [
-      '全部同步时改为只备份一次配置，不再每个 provider 各备份一次。',
-      '去掉同步完成后“需要重启 Gateway 让新模型生效”的追问。',
-    ],
-  },
-  {
-    version: 'V0.0.8',
-    updatedAt: '2026-06-01',
-    summary: [
-      '删除主脚本里 addProviderInline / syncProviderInline / removeProviderInline 的内部实现。',
-      '主脚本现在对这 3 个辅助脚本只保留外部调用，不再保留内部同类代码。',
-    ],
-  },
-  {
-    version: 'V0.0.6',
-    updatedAt: '2026-06-01',
-    summary: [
-      '删除主脚本内嵌的 3 个辅助脚本模板，后续统一只调用外部脚本文件。',
-      '首次运行与 [21] 检查/修复 不再自动补齐 add-provider.mjs、provider-manage.mjs、list-providers-cn.mjs。',
-    ],
-  },
-  {
-    version: 'V0.0.3',
-    updatedAt: '2026-06-01',
-    summary: [
-      '配置文件备份名进一步简化为 openclaw.json-YYYYMMDD-HHMMSS。',
-      '删除 --help 页面里的版本历史展示。',
-    ],
-  },
-  {
-    version: 'V0.0.2',
-    updatedAt: '2026-06-01',
-    summary: [
-      '删除主菜单版本号详情页，版本项仅保留展示，不再显示历史版本记录。',
-    ],
-  },
-  {
-    version: 'V0.0.1',
-    updatedAt: '2026-06-01',
-    summary: [
-      '配置文件备份名改为短格式: openclaw.json.bak-YYYYMMDD-HHMMSS。',
-    ],
-  },
-  {
-    version: 'V0.0.0',
-    updatedAt: '2026-05-31',
-    summary: [
-      '手动将脚本版本号重置为 V0.0.0。',
-    ],
-  },
-  {
-    version: 'V4.9.103',
-    updatedAt: '2026-05-10',
-    summary: [
-      '同步确认页新增 s/默认模型 选项:只改默认模型,不应用到任何 Telegram 会话。',
-      'a/全局切换 恢复为只应用到所有 Telegram 会话,不再同时修改默认模型。',
     ],
   },
 ];
