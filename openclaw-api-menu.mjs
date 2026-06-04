@@ -50,6 +50,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.4',
+    updatedAt: '2026-06-04',
+    summary: [
+      '修复 getSessionFriendlyName 无法读取 origin.label 导致私聊显示为通用占位符的问题。',
+      '现在会话名称可以正确从 sessions.json 的 origin.label 字段读取。',
+    ],
+  },
+  {
     version: 'v0.0.3',
     updatedAt: '2026-06-04',
     summary: [
@@ -404,9 +412,11 @@ function cleanSessionDisplayName(value) {
 
 function getSessionFriendlyName(key, entry = {}) {
   const metadata = entry.metadata && typeof entry.metadata === 'object' ? entry.metadata : {};
+  const origin = entry.origin && typeof entry.origin === 'object' ? entry.origin : {};
   const directFields = [
     entry.subject,
     entry.label,
+    origin.label,
     metadata.label,
     metadata.subject,
     entry.title,
