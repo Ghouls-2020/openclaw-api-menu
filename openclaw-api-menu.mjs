@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.6',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复主菜单 20. 版本 项显示但输入 20 被判定为无效选择的问题。',
+      '为主菜单选择处理补上 showScriptVersionDetail 分支,输入 20 可正常查看版本记录。',
+    ],
+  },
+  {
     version: 'v0.0.5',
     updatedAt: '2026-06-05',
     summary: [
@@ -3485,6 +3493,7 @@ async function showMenu() {
       else if (finalChoice === '17') await uninstallOpenClaw(ask);
       else if (finalChoice === '18') await purgeOpenClaw(ask);
       else if (finalChoice === '19') await diagnoseGatewayQuick(ask);
+      else if (finalChoice === '20') await showScriptVersionDetail(ask);
       else if (finalChoice === '21') await repairHelperScripts(ask);
       else if (finalChoice === '22') await quickHealthcheck(ask);
       else warn('无效选择,请重新输入。');
