@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
 
 const rawArgs = process.argv.slice(2);
 const noBackup = rawArgs.includes('--no-backup');
@@ -52,6 +53,14 @@ function ensureJsonFile(file, fallback) {
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+}
+
+function runConfigPatch(patch) {
+  return spawnSync('openclaw', ['config', 'patch', '--stdin'], {
+    input: JSON.stringify(patch, null, 2),
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
 }
 
 function formatBackupTimestamp(date = new Date()) {
@@ -175,7 +184,19 @@ if (action === 'rename') {
       name: `${providerDisplayName} / ${model.id}`,
     }));
   }
-  fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
+  const patchRes = runConfigPatch({
+    models: {
+      providers: {
+        [providerName]: provider,
+      },
+    },
+  });
+  if (patchRes.status !== 0) {
+    console.error('Failed to apply config patch');
+    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
+    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    process.exit(patchRes.status || 4);
+  }
   console.log(`Renamed provider display: ${providerName} -> ${providerDisplayName}`);
   if (backup) console.log(`Backup: ${backup}`);
   process.exit(0);
@@ -208,7 +229,30 @@ if (action === 'remove') {
     }
   }
   pruneModelSelection(cfg, providerName);
-  fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
+  const patchRes = runConfigPatch({
+    models: {
+      providers: {
+        [providerName]: null,
+      },
+    },
+    agents: {
+      defaults: {
+        models: modelMap,
+        model: cfg.agents?.defaults?.model || null,
+        imageModel: cfg.agents?.defaults?.imageModel || null,
+        pdfModel: cfg.agents?.defaults?.pdfModel || null,
+        audioModel: cfg.agents?.defaults?.audioModel || null,
+        videoGenerationModel: cfg.agents?.defaults?.videoGenerationModel || null,
+        musicGenerationModel: cfg.agents?.defaults?.musicGenerationModel || null,
+      },
+    },
+  });
+  if (patchRes.status !== 0) {
+    console.error('Failed to apply config patch');
+    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
+    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    process.exit(patchRes.status || 4);
+  }
   console.log(`Removed provider: ${providerName}`);
   console.log(`Removed refs: ${removed}`);
   if (backup) console.log(`Backup: ${backup}`);
@@ -295,7 +339,24 @@ if (action === 'sync') {
       added += 1;
     }
   }
-  fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
+  const patchRes = runConfigPatch({
+    models: {
+      providers: {
+        [providerName]: provider,
+      },
+    },
+    agents: {
+      defaults: {
+        models: modelMap,
+      },
+    },
+  });
+  if (patchRes.status !== 0) {
+    console.error('Failed to apply config patch');
+    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
+    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    process.exit(patchRes.status || 4);
+  }
   console.log(`Synced provider: ${providerName}`);
   console.log(`Display name: ${displayName}`);
   console.log(`Models now present: ${ids.length}`);

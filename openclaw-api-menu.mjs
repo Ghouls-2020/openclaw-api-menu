@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.7',
+    updatedAt: '2026-06-05',
+    summary: [
+      '关键配置写入改为通过 openclaw config patch --stdin 提交,减少读旧配置整份覆盖新配置的风险。',
+      '新增/同步/删除 Provider 和切换默认模型不再直接整份覆盖 openclaw.json。',
+    ],
+  },
+  {
     version: 'v0.0.6',
     updatedAt: '2026-06-05',
     summary: [
@@ -973,6 +981,16 @@ function ensureJsonFile(file, fallback, options = {}) {
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+}
+
+function applyConfigPatch(patch, options = {}) {
+  const args = ['config', 'patch', '--stdin'];
+  if (options.dryRun) args.push('--dry-run');
+  return runCommand('openclaw', args, {
+    input: JSON.stringify(patch, null, 2),
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
 }
 
 function ensureConfigSkeleton() {
@@ -1960,7 +1978,16 @@ async function switchDefaultModel(ask) {
           fresh.agents.defaults.model.primary = ref;
         }
         createConfigBackup('switch-model');
-        fs.writeFileSync(CONFIG, JSON.stringify(fresh, null, 2) + '\n');
+        const patchRes = applyConfigPatch({
+          agents: { defaults: { model: fresh.agents.defaults.model } },
+        });
+        if (patchRes.status !== 0) {
+          danger('写入默认模型配置失败。');
+          if (patchRes.stdout) console.log(String(patchRes.stdout).trim());
+          if (patchRes.stderr) console.log(String(patchRes.stderr).trim());
+          await backPrompt(ask);
+          continue;
+        }
       }
       addRecentModel(ref, `${formatProviderDisplay(chosenProvider.displayName, chosenProvider.id)} / ${model.id}`, chosenProvider.displayName);
       applySelectedSessionSync(sessionSelection, ref);
@@ -2317,7 +2344,29 @@ async function modifyProvider(ask) {
         }));
       }
 
-      writeJson(CONFIG, cfg);
+      const patchPayload = {
+        models: { providers: { [row.id]: provider } },
+        agents: {
+          defaults: {
+            models: cfg.agents?.defaults?.models || {},
+            model: cfg.agents?.defaults?.model || null,
+            imageModel: cfg.agents?.defaults?.imageModel || null,
+            pdfModel: cfg.agents?.defaults?.pdfModel || null,
+            audioModel: cfg.agents?.defaults?.audioModel || null,
+            videoGenerationModel: cfg.agents?.defaults?.videoGenerationModel || null,
+            musicGenerationModel: cfg.agents?.defaults?.musicGenerationModel || null,
+          },
+        },
+      };
+      if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
+      const patchRes = applyConfigPatch(patchPayload);
+      if (patchRes.status !== 0) {
+        danger('API 配置写入失败。');
+        if (patchRes.stdout) console.log(String(patchRes.stdout).trim());
+        if (patchRes.stderr) console.log(String(patchRes.stderr).trim());
+        await backPrompt(ask);
+        break;
+      }
       const checked = await detectProviderStatus(provider);
       success(`API 配置修改成功。`);
       info(`修改后检测:${stripAnsi(formatProviderStatusCompact(checked))}`);
@@ -2529,7 +2578,16 @@ async function quickSwitchFavorite(ask) {
         fresh.agents.defaults.model.primary = selected.ref;
       }
       createConfigBackup('recent-switch');
-      writeJson(CONFIG, fresh);
+      const patchRes = applyConfigPatch({
+        agents: { defaults: { model: fresh.agents.defaults.model } },
+      });
+      if (patchRes.status !== 0) {
+        danger('写入默认模型配置失败。');
+        if (patchRes.stdout) console.log(String(patchRes.stdout).trim());
+        if (patchRes.stderr) console.log(String(patchRes.stderr).trim());
+        await backPrompt(ask);
+        continue;
+      }
     }
 
     addRecentModel(selected.ref, selected.name, selected.provider);
@@ -2654,7 +2712,16 @@ async function searchModelsGlobally(ask) {
           fresh.agents.defaults.model.primary = selected.ref;
         }
         createConfigBackup('search-switch');
-        writeJson(CONFIG, fresh);
+        const patchRes = applyConfigPatch({
+          agents: { defaults: { model: fresh.agents.defaults.model } },
+        });
+        if (patchRes.status !== 0) {
+          danger('写入默认模型配置失败。');
+          if (patchRes.stdout) console.log(String(patchRes.stdout).trim());
+          if (patchRes.stderr) console.log(String(patchRes.stderr).trim());
+          await backPrompt(ask);
+          return;
+        }
       }
       addRecentModel(selected.ref, `${formatProviderDisplay(selected.providerDisplayName, selected.providerId)} / ${selected.id}`, selected.providerDisplayName);
       applySelectedSessionSync(sessionSelection, selected.ref);

@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
@@ -65,6 +66,14 @@ function ensureJsonFile(file, fallback) {
 function writeJson(file, data) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+}
+
+function runConfigPatch(patch) {
+  return spawnSync('openclaw', ['config', 'patch', '--stdin'], {
+    input: JSON.stringify(patch, null, 2),
+    encoding: 'utf8',
+    maxBuffer: 8 * 1024 * 1024,
+  });
 }
 
 function formatBackupTimestamp(date = new Date()) {
@@ -151,20 +160,33 @@ displayNames[providerName] = providerDisplayName;
 writeJson(DISPLAY_NAMES, displayNames);
 
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
-cfg.models.providers[providerName] = {
-  baseUrl,
-  apiKey,
-  api: 'openai-completions',
-  models: providerModels,
-};
-
-for (const id of ids) {
-  const ref = `${providerName}/${id}`;
-  if (!cfg.agents.defaults.models[ref]) cfg.agents.defaults.models[ref] = {};
-}
+const modelsPatch = {};
+for (const id of ids) modelsPatch[`${providerName}/${id}`] = {};
 
 const backup = createConfigBackup();
-fs.writeFileSync(CONFIG, JSON.stringify(cfg, null, 2) + '\n');
+const patchRes = runConfigPatch({
+  models: {
+    providers: {
+      [providerName]: {
+        baseUrl,
+        apiKey,
+        api: 'openai-completions',
+        models: providerModels,
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      models: modelsPatch,
+    },
+  },
+});
+if (patchRes.status !== 0) {
+  console.error('Failed to apply config patch');
+  if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
+  if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+  process.exit(patchRes.status || 4);
+}
 
 console.log(`Added provider ${providerName}`);
 console.log(`Display name: ${providerDisplayName}`);
