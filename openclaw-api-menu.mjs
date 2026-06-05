@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.12',
+    updatedAt: '2026-06-06',
+    summary: [
+      '修复一键检查 Gateway 故障原因时被旧重启日志误导的问题,现在优先按当前 status 判断运行状态。',
+      '主菜单第 14 项文案从“回退指定 OpenClaw 版本”改为“降级 OpenClaw”。',
+    ],
+  },
+  {
     version: 'v0.0.11',
     updatedAt: '2026-06-06',
     summary: [
@@ -2896,6 +2904,17 @@ function diagnoseGateway(statusOutput, logOutput) {
   const statusText = String(statusOutput || '');
   const logText = String(logOutput || '');
   const merged = `${statusText}\n${logText}`;
+  const currentRunning = /Runtime:\s*running/i.test(statusText);
+  const currentListening = /Listening:/i.test(statusText);
+  const currentProbeOk = /Connectivity probe:\s*(ok|ready|passed|success)/i.test(statusText);
+
+  if (currentRunning && (currentProbeOk || currentListening)) {
+    return {
+      title: 'Gateway 基本正常',
+      summary: '当前 Gateway 正在运行且端口/探针正常;旧日志中的重启片段可忽略。',
+      suggestion: '如功能正常,可继续使用;如仍有个别异常,再看日志细节。',
+    };
+  }
 
   if (/deactivating|restarting|received SIGTERM; restarting|draining .* before restart|config change requires channel reload|restarting telegram channel|starting provider/i.test(merged)) {
     return {
@@ -3620,7 +3639,7 @@ async function printMainMenu() {
   console.log(menuItem(11, '启动 OpenClaw'));
   console.log(menuItem(12, '停止 OpenClaw'));
   console.log(menuItem(13, '升级 OpenClaw', latestVersion !== '未知' && latestVersion !== currentVersion ? `可更新到 ${latestVersion}` : ''));
-  console.log(menuItem(14, '回退指定 OpenClaw 版本'));
+  console.log(menuItem(14, '降级 OpenClaw'));
   console.log(menuItem(15, '重启 Gateway'));
   console.log(menuItem(16, '备份 OpenClaw 配置'));
   console.log(menuItem(17, '卸载 OpenClaw'));
