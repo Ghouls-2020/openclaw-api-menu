@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.8',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复脚本回退指定 OpenClaw 版本时的版本保护冲突。',
+      '降级流程改为先停止 Gateway,安装目标版本后按需使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 重新启动 Gateway。',
+    ],
+  },
+  {
     version: 'v0.0.7',
     updatedAt: '2026-06-05',
     summary: [
@@ -3094,6 +3102,31 @@ async function restartGateway(ask) {
   }
 }
 
+function compareReleaseVersions(a, b) {
+  const pa = String(a || '').split('.').map((x) => Number(x || 0));
+  const pb = String(b || '').split('.').map((x) => Number(x || 0));
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (pa[i] || 0) - (pb[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function getConfigWrittenVersion() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+    const value = raw?.meta?.writtenByVersion || raw?.meta?.configWrittenByVersion || raw?.meta?.lastWrittenByVersion || '';
+    return extractOpenClawVersion(value, String(value || '').trim());
+  } catch {
+    return '';
+  }
+}
+
+function runDestructiveOpenClaw(args, options = {}) {
+  return runCommand('openclaw', args, { ...options, env: { ...process.env, OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: '1' } });
+}
+
 async function installSpecificOpenClawVersion(ask) {
   renderScreenTitle('安装 / 回退指定 OpenClaw 版本');
   const currentVersionFull = getOpenClawVersion();
@@ -3101,7 +3134,7 @@ async function installSpecificOpenClawVersion(ask) {
   console.log(`当前版本：${color(currentVersionFull, C.yellow, C.bold)}`);
   console.log('');
   warn('该功能适用于安装指定版本,或在新版本回归时临时回退。');
-  info('将执行 npm install -g openclaw@<version>,随后自动重启 Gateway。');
+  info('升级时通常无需先停 Gateway；降级时脚本会先停止 Gateway,再安装旧版本并按需用恢复模式重新启动。');
 
   const choices = getOpenClawVersionChoices(currentVersionFull);
   console.log('');
@@ -3148,9 +3181,13 @@ async function installSpecificOpenClawVersion(ask) {
     await backPrompt(ask);
     return;
   }
+
+  const isDowngrade = currentVersion !== '未知版本' && compareReleaseVersions(targetVersion, currentVersion) < 0;
   console.log('');
   if (targetVersion === currentVersion) {
     warn(`你选择的 ${targetVersion} 与当前版本一致。`);
+  } else if (isDowngrade) {
+    warn(`将回退到旧版本: openclaw@${targetVersion}`);
   } else {
     warn(`将安装指定版本: openclaw@${targetVersion}`);
   }
@@ -3166,6 +3203,18 @@ async function installSpecificOpenClawVersion(ask) {
   } catch (err) {
     warn(`安装/回退前自动备份失败:${err.message}`);
   }
+
+  const lines = [];
+  if (isDowngrade) {
+    info('检测到是降级操作,先停止 Gateway 以避免旧版本 binary 直接接管新配置。');
+    const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+    if (stopRes.status === 0) {
+      lines.push(color('Gateway 已停止。', C.green, C.bold));
+    } else {
+      lines.push(color('Gateway 停止失败;将继续尝试安装目标版本,但后续接管可能受影响。', C.yellow, C.bold));
+    }
+  }
+
   info(`正在安装 openclaw@${targetVersion}，请稍等...`);
   const installRes = runCommand('npm', ['install', '-g', `openclaw@${targetVersion}`], { stdio: 'inherit' });
   const newVersion = getOpenClawVersion();
@@ -3173,19 +3222,34 @@ async function installSpecificOpenClawVersion(ask) {
     await finishScreen(ask, [color('指定版本安装失败,请检查 npm、网络或版本号是否存在。', C.red, C.bold)]);
     return;
   }
-  const lines = [];
+
   if (!String(newVersion).includes(targetVersion)) {
     lines.push(color(`安装流程已完成,但当前检测版本为:${newVersion}`, C.yellow, C.bold));
     lines.push(color('可能是当前命令路径未切换,或该版本未真正安装到当前正在使用的环境。', C.white));
   } else {
     lines.push(color(`指定版本安装完成。当前版本：${newVersion}`, C.green, C.bold));
   }
-  info('正在重启 Gateway 并验证状态...');
-  const restartRes = runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
-  if (restartRes.status === 0) {
-    lines.push(color('Gateway 重启命令已执行完成。', C.green, C.bold));
+
+  const configWrittenVersion = getConfigWrittenVersion();
+  const shouldUseRecovery = isDowngrade && configWrittenVersion && compareReleaseVersions(targetVersion, configWrittenVersion) < 0;
+  if (shouldUseRecovery) {
+    info(`检测到配置最近由更高版本 ${configWrittenVersion} 写入,将使用降级恢复模式启动 Gateway。`);
   } else {
-    lines.push(color('Gateway 重启失败,请手动检查服务状态。', C.red, C.bold));
+    info('正在启动/重启 Gateway 并验证状态...');
+  }
+  const restartRes = shouldUseRecovery
+    ? runDestructiveOpenClaw(['gateway', 'start'], { stdio: 'inherit' })
+    : runCommand('openclaw', ['gateway', isDowngrade ? 'start' : 'restart'], { stdio: 'inherit' });
+  if (restartRes.status === 0) {
+    lines.push(color('Gateway 启动/重启命令已执行完成。', C.green, C.bold));
+    if (shouldUseRecovery) {
+      lines.push(color('已使用降级恢复模式允许旧版本 binary 接管由更高版本写入过的配置。', C.white));
+    }
+  } else {
+    lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
+    if (shouldUseRecovery) {
+      lines.push(color('如需手动执行,可临时使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway start', C.white));
+    }
   }
   await finishScreen(ask, lines);
 }
