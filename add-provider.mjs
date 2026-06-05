@@ -9,6 +9,7 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(SCRIPT_DIR, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 15000;
+const CONFIG_BACKUP_KEEP_MAX = 20;
 
 const args = process.argv.slice(2);
 let providerName, providerDisplayName, baseUrlRaw, apiKey;
@@ -64,8 +65,11 @@ function ensureJsonFile(file, fallback) {
 }
 
 function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
 }
 
 function runConfigPatch(patch) {
@@ -82,9 +86,36 @@ function formatBackupTimestamp(date = new Date()) {
   return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function cleanupConfigBackups() {
+  const dir = path.dirname(CONFIG);
+  const base = path.basename(CONFIG);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}-`))
+      .map((name) => {
+        const fullPath = path.join(dir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(fullPath).mtimeMs;
+        } catch {}
+        return { fullPath, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return;
+  }
+  for (const item of entries.slice(CONFIG_BACKUP_KEEP_MAX)) {
+    try {
+      fs.unlinkSync(item.fullPath);
+    } catch {}
+  }
+}
+
 function createConfigBackup() {
   const backup = `${CONFIG}-${formatBackupTimestamp()}`;
   fs.copyFileSync(CONFIG, backup);
+  cleanupConfigBackups();
   return backup;
 }
 

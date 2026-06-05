@@ -32,6 +32,7 @@ const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
 const GATEWAY_RESTART_CHECK_MAX_ATTEMPTS = 20;
 const VERSION_HISTORY_VISIBLE_COUNT = 20;
 const MENU_BACKUP_KEEP_MAX = 20;
+const CONFIG_BACKUP_KEEP_MAX = 20;
 const modelStatusCache = new Map();
 // 维护规矩:
 // 1. 每次修改本脚本前,必须先创建一个备份到 openclaw-api-menu-backups/ 文件夹,命名格式:openclaw-api-menu.mjs-Vx.y.z
@@ -54,6 +55,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.14',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将脚本内 JSON 写入统一改为 tmp + rename 的原子写入,降低中断/OOM/磁盘异常导致半文件的风险。',
+      '配置备份新增保留上限清理,默认只保留最近 20 个 openclaw.json-* 备份,避免长期测试堆积。',
+    ],
+  },
   {
     version: 'v0.0.13',
     updatedAt: '2026-06-06',
@@ -357,10 +366,37 @@ function formatBackupTimestamp(date = new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
+function cleanupConfigBackups() {
+  const dir = path.dirname(CONFIG);
+  const base = path.basename(CONFIG);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir)
+      .filter((name) => name.startsWith(`${base}-`))
+      .map((name) => {
+        const fullPath = path.join(dir, name);
+        let mtimeMs = 0;
+        try {
+          mtimeMs = fs.statSync(fullPath).mtimeMs;
+        } catch {}
+        return { fullPath, mtimeMs };
+      })
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return;
+  }
+  for (const item of entries.slice(CONFIG_BACKUP_KEEP_MAX)) {
+    try {
+      fs.unlinkSync(item.fullPath);
+    } catch {}
+  }
+}
+
 function createConfigBackup(tag = 'manual') {
   const timestamp = formatBackupTimestamp();
   const backupPath = `${CONFIG}-${timestamp}`;
   fs.copyFileSync(CONFIG, backupPath);
+  cleanupConfigBackups();
   return backupPath;
 }
 
@@ -1027,8 +1063,11 @@ function ensureJsonFile(file, fallback, options = {}) {
 }
 
 function writeJson(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
 }
 
 function applyConfigPatch(patch, options = {}) {
