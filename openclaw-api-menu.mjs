@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.9',
+    updatedAt: '2026-06-05',
+    summary: [
+      '修复脚本降级 OpenClaw 时对配置写入版本的判断不可靠,导致普通 gateway start 被官方版本保护拦住的问题。',
+      '降级流程改为只要目标版本低于当前版本,就固定使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 以恢复模式启动 Gateway。',
+    ],
+  },
+  {
     version: 'v0.0.8',
     updatedAt: '2026-06-05',
     summary: [
@@ -3230,20 +3238,19 @@ async function installSpecificOpenClawVersion(ask) {
     lines.push(color(`指定版本安装完成。当前版本：${newVersion}`, C.green, C.bold));
   }
 
-  const configWrittenVersion = getConfigWrittenVersion();
-  const shouldUseRecovery = isDowngrade && configWrittenVersion && compareReleaseVersions(targetVersion, configWrittenVersion) < 0;
+  const shouldUseRecovery = isDowngrade;
   if (shouldUseRecovery) {
-    info(`检测到配置最近由更高版本 ${configWrittenVersion} 写入,将使用降级恢复模式启动 Gateway。`);
+    info('检测到是降级操作,将直接使用降级恢复模式启动 Gateway。');
   } else {
     info('正在启动/重启 Gateway 并验证状态...');
   }
   const restartRes = shouldUseRecovery
     ? runDestructiveOpenClaw(['gateway', 'start'], { stdio: 'inherit' })
-    : runCommand('openclaw', ['gateway', isDowngrade ? 'start' : 'restart'], { stdio: 'inherit' });
+    : runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
   if (restartRes.status === 0) {
     lines.push(color('Gateway 启动/重启命令已执行完成。', C.green, C.bold));
     if (shouldUseRecovery) {
-      lines.push(color('已使用降级恢复模式允许旧版本 binary 接管由更高版本写入过的配置。', C.white));
+      lines.push(color('已使用降级恢复模式允许旧版本 binary 接管更高版本写入过的配置。', C.white));
     }
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
