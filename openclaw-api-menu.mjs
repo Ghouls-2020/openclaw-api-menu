@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.13',
+    updatedAt: '2026-06-06',
+    summary: [
+      '继续收敛配置并发写入风险:默认模型切换只 patch agents.defaults.model.primary,不再写回旧的整块 model 对象。',
+      'Provider 修改/删除/同步改为按单个模型引用增删 patch,避免把读到的旧 agents.defaults.models 整块覆盖回配置。',
+    ],
+  },
+  {
     version: 'v0.0.12',
     updatedAt: '2026-06-06',
     summary: [
@@ -2019,7 +2027,7 @@ async function switchDefaultModel(ask) {
         }
         createConfigBackup('switch-model');
         const patchRes = applyConfigPatch({
-          agents: { defaults: { model: fresh.agents.defaults.model } },
+          agents: { defaults: { model: { primary: ref } } },
         });
         if (patchRes.status !== 0) {
           danger('写入默认模型配置失败。');
@@ -2384,20 +2392,22 @@ async function modifyProvider(ask) {
         }));
       }
 
+      const modelRefPatch = {};
+      if (providerIdChanged) {
+        for (const key of Object.keys(cfg.agents?.defaults?.models || {})) {
+          if (key.startsWith(`${oldProviderId}/`)) {
+            const suffix = key.slice(oldProviderId.length + 1);
+            modelRefPatch[key] = null;
+            modelRefPatch[`${newProviderId}/${suffix}`] = {};
+          }
+        }
+      }
       const patchPayload = {
         models: { providers: { [row.id]: provider } },
-        agents: {
-          defaults: {
-            models: cfg.agents?.defaults?.models || {},
-            model: cfg.agents?.defaults?.model || null,
-            imageModel: cfg.agents?.defaults?.imageModel || null,
-            pdfModel: cfg.agents?.defaults?.pdfModel || null,
-            audioModel: cfg.agents?.defaults?.audioModel || null,
-            videoGenerationModel: cfg.agents?.defaults?.videoGenerationModel || null,
-            musicGenerationModel: cfg.agents?.defaults?.musicGenerationModel || null,
-          },
-        },
       };
+      if (Object.keys(modelRefPatch).length) {
+        patchPayload.agents = { defaults: { models: modelRefPatch } };
+      }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
       const patchRes = applyConfigPatch(patchPayload);
       if (patchRes.status !== 0) {
@@ -2619,7 +2629,7 @@ async function quickSwitchFavorite(ask) {
       }
       createConfigBackup('recent-switch');
       const patchRes = applyConfigPatch({
-        agents: { defaults: { model: fresh.agents.defaults.model } },
+        agents: { defaults: { model: { primary: selected.ref } } },
       });
       if (patchRes.status !== 0) {
         danger('写入默认模型配置失败。');
@@ -2753,7 +2763,7 @@ async function searchModelsGlobally(ask) {
         }
         createConfigBackup('search-switch');
         const patchRes = applyConfigPatch({
-          agents: { defaults: { model: fresh.agents.defaults.model } },
+          agents: { defaults: { model: { primary: selected.ref } } },
         });
         if (patchRes.status !== 0) {
           danger('写入默认模型配置失败。');

@@ -229,6 +229,11 @@ if (action === 'remove') {
     }
   }
   pruneModelSelection(cfg, providerName);
+  const modelRefPatch = {};
+  for (const key of Object.keys(modelMap)) {
+    const [pfx] = key.split('/');
+    if (pfx.toLowerCase() === providerName.toLowerCase()) modelRefPatch[key] = null;
+  }
   const patchRes = runConfigPatch({
     models: {
       providers: {
@@ -237,13 +242,7 @@ if (action === 'remove') {
     },
     agents: {
       defaults: {
-        models: modelMap,
-        model: cfg.agents?.defaults?.model || null,
-        imageModel: cfg.agents?.defaults?.imageModel || null,
-        pdfModel: cfg.agents?.defaults?.pdfModel || null,
-        audioModel: cfg.agents?.defaults?.audioModel || null,
-        videoGenerationModel: cfg.agents?.defaults?.videoGenerationModel || null,
-        musicGenerationModel: cfg.agents?.defaults?.musicGenerationModel || null,
+        models: modelRefPatch,
       },
     },
   });
@@ -333,10 +332,17 @@ if (action === 'sync') {
       removed += 1;
     }
   }
+  const modelRefPatch = {};
   for (const ref of wanted) {
     if (!modelMap[ref]) {
-      modelMap[ref] = {};
+      modelRefPatch[ref] = {};
       added += 1;
+    }
+  }
+  for (const key of Object.keys(modelMap)) {
+    const [pfx] = key.split('/');
+    if (pfx.toLowerCase() === providerName.toLowerCase() && !wanted.has(key)) {
+      modelRefPatch[key] = null;
     }
   }
   const patchRes = runConfigPatch({
@@ -347,7 +353,7 @@ if (action === 'sync') {
     },
     agents: {
       defaults: {
-        models: modelMap,
+        models: modelRefPatch,
       },
     },
   });
