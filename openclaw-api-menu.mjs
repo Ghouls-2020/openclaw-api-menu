@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.11',
+    updatedAt: '2026-06-06',
+    summary: [
+      '继续修复降级恢复流程:重启 systemd Gateway 前临时注入 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 到 user manager 环境。',
+      '降级时同步把配置 meta.lastTouchedVersion 下调为目标版本,避免恢复成功后下次普通重启再次被版本保护拦截。',
+    ],
+  },
+  {
     version: 'v0.0.10',
     updatedAt: '2026-06-06',
     summary: [
@@ -3143,6 +3151,36 @@ function runDestructiveOpenClaw(args, options = {}) {
   return runCommand('openclaw', args, { ...options, env: { ...process.env, OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: '1' } });
 }
 
+function setDowngradeConfigTouchedVersion(targetVersion) {
+  const normalized = extractOpenClawVersion(targetVersion, String(targetVersion || '').trim());
+  if (!/^\d{4}\.\d+\.\d+$/.test(normalized)) {
+    return { ok: false, reason: '目标版本格式无效' };
+  }
+  try {
+    const raw = fs.readFileSync(CONFIG, 'utf8');
+    const cfg = JSON.parse(raw);
+    cfg.meta = cfg.meta && typeof cfg.meta === 'object' && !Array.isArray(cfg.meta) ? cfg.meta : {};
+    cfg.meta.lastTouchedVersion = normalized;
+    cfg.meta.lastTouchedAt = new Date().toISOString();
+    const tmp = `${CONFIG}.tmp-${process.pid}`;
+    fs.writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}
+`, 'utf8');
+    fs.renameSync(tmp, CONFIG);
+    return { ok: true, version: normalized };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+function setSystemdUserDowngradeEnv(enabled) {
+  if (process.platform === 'win32') return { ok: false, skipped: true, reason: 'Windows 无 systemd user manager' };
+  const args = enabled
+    ? ['--user', 'set-environment', 'OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1']
+    : ['--user', 'unset-environment', 'OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS'];
+  const res = runCommand('systemctl', args, { timeout: 8000 });
+  return { ok: res.status === 0, status: res.status, output: `${res.stdout || ''}${res.stderr || ''}`.trim() };
+}
+
 async function installSpecificOpenClawVersion(ask) {
   renderScreenTitle('安装 / 回退指定 OpenClaw 版本');
   const currentVersionFull = getOpenClawVersion();
@@ -3256,7 +3294,23 @@ async function installSpecificOpenClawVersion(ask) {
     } else {
       lines.push(color('Gateway service 重新安装失败;仍会继续尝试恢复模式重启。', C.yellow, C.bold));
     }
-    restartRes = runDestructiveOpenClaw(['gateway', 'restart'], { stdio: 'inherit' });
+    const touchRes = setDowngradeConfigTouchedVersion(targetVersion);
+    if (touchRes.ok) {
+      lines.push(color(`配置写入版本已下调为 ${touchRes.version}。`, C.green, C.bold));
+    } else {
+      lines.push(color(`配置写入版本下调失败:${touchRes.reason}`, C.yellow, C.bold));
+    }
+    const envRes = setSystemdUserDowngradeEnv(true);
+    if (envRes.ok) {
+      lines.push(color('已为本次 systemd Gateway 启动临时注入降级恢复环境变量。', C.green, C.bold));
+    } else {
+      lines.push(color('systemd 临时环境变量注入失败;仍会继续尝试恢复模式重启。', C.yellow, C.bold));
+    }
+    try {
+      restartRes = runDestructiveOpenClaw(['gateway', 'restart'], { stdio: 'inherit' });
+    } finally {
+      setSystemdUserDowngradeEnv(false);
+    }
   } else {
     info('正在启动/重启 Gateway 并验证状态...');
     restartRes = runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
@@ -3270,8 +3324,9 @@ async function installSpecificOpenClawVersion(ask) {
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
     if (shouldUseRecovery) {
-      lines.push(color('如需手动执行,可临时使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway install --force', C.white));
-      lines.push(color('然后执行 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway restart', C.white));
+      lines.push(color('如需手动执行,可先运行 systemctl --user set-environment OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1', C.white));
+      lines.push(color('然后执行 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway install --force && OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway restart', C.white));
+      lines.push(color('恢复后可运行 systemctl --user unset-environment OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS', C.white));
     }
   }
   await finishScreen(ask, lines);
