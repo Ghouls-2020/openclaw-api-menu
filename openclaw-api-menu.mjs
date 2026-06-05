@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.10',
+    updatedAt: '2026-06-06',
+    summary: [
+      '修复回退指定 OpenClaw 版本后 Gateway service 仍可能被新配置版本保护拦截的问题。',
+      '降级流程改为安装旧版本后先用恢复模式执行 gateway install --force,再用恢复模式 restart,确保 systemd service 由目标旧版本接管。',
+    ],
+  },
+  {
     version: 'v0.0.9',
     updatedAt: '2026-06-05',
     summary: [
@@ -3239,23 +3247,31 @@ async function installSpecificOpenClawVersion(ask) {
   }
 
   const shouldUseRecovery = isDowngrade;
+  let restartRes;
   if (shouldUseRecovery) {
-    info('检测到是降级操作,将直接使用降级恢复模式启动 Gateway。');
+    info('检测到是降级操作,将使用降级恢复模式重新安装 Gateway service 并重启。');
+    const installServiceRes = runDestructiveOpenClaw(['gateway', 'install', '--force'], { stdio: 'inherit' });
+    if (installServiceRes.status === 0) {
+      lines.push(color('Gateway service 已由目标旧版本重新安装。', C.green, C.bold));
+    } else {
+      lines.push(color('Gateway service 重新安装失败;仍会继续尝试恢复模式重启。', C.yellow, C.bold));
+    }
+    restartRes = runDestructiveOpenClaw(['gateway', 'restart'], { stdio: 'inherit' });
   } else {
     info('正在启动/重启 Gateway 并验证状态...');
+    restartRes = runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
   }
-  const restartRes = shouldUseRecovery
-    ? runDestructiveOpenClaw(['gateway', 'start'], { stdio: 'inherit' })
-    : runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
   if (restartRes.status === 0) {
     lines.push(color('Gateway 启动/重启命令已执行完成。', C.green, C.bold));
     if (shouldUseRecovery) {
       lines.push(color('已使用降级恢复模式允许旧版本 binary 接管更高版本写入过的配置。', C.white));
+      lines.push(color('如果仍提示旧版本保护,请执行 [15] 查看日志;重点检查 service 是否已指向目标版本。', C.white));
     }
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
     if (shouldUseRecovery) {
-      lines.push(color('如需手动执行,可临时使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway start', C.white));
+      lines.push(color('如需手动执行,可临时使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway install --force', C.white));
+      lines.push(color('然后执行 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway restart', C.white));
     }
   }
   await finishScreen(ask, lines);
