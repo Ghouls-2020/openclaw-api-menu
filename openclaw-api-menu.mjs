@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.31',
+    updatedAt: '2026-06-06',
+    summary: [
+      '调整“全部同步”的显示节奏:保持并发拉取模型列表,但按 Provider 顺序逐个等待并显示结果。',
+      '避免全部同步完成后一次性刷出所有 Provider 结果,显示更接近逐个检测的旧体验。',
+    ],
+  },
+  {
     version: 'v0.0.30',
     updatedAt: '2026-06-06',
     summary: [
@@ -2406,7 +2414,7 @@ async function syncAllProviders(ask) {
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   const concurrency = rows.length;
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
-  const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
+  const syncPromises = rows.map(async (row) => {
     const startedAt = Date.now();
     try {
       const provider = beforeCfg.models?.providers?.[row.id];
@@ -2420,10 +2428,11 @@ async function syncAllProviders(ask) {
   const replacePaths = [];
   let successCount = 0, failCount = 0;
   const detailLines = [];
-  for (const [idx, item] of syncResults.entries()) {
-    const row = item.row;
+  for (const [idx, promise] of syncPromises.entries()) {
+    const row = rows[idx];
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
+    const item = await promise;
     const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
