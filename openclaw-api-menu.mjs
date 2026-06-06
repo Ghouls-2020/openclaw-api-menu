@@ -19,14 +19,14 @@ const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
-const MODEL_STATUS_TIMEOUT_MS = 3000;
+const MODEL_STATUS_TIMEOUT_MS = 5000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_TEST_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
 const MODEL_STATUS_DEFAULT_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
 const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
 const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
-const MODEL_STATUS_CACHE_SCHEMA = 'v5';
+const MODEL_STATUS_CACHE_SCHEMA = 'v6';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
 const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.42',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将模型测活超时从 3 秒调整为 5 秒,配合更自然的 HTTP/HTTPS 问题减少误判超时。',
+      '/models 同步超时仍保持 3 秒,只放宽切换模型前的真实调用测活。',
+    ],
+  },
   {
     version: 'v0.0.41',
     updatedAt: '2026-06-06',
