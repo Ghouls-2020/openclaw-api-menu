@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import readline from 'readline';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 
@@ -55,6 +55,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.16',
+    updatedAt: '2026-06-06',
+    summary: [
+      '优化“全部同步”速度:同步全部 Provider 从串行改为最多 3 个并发执行,减少慢接口拖累总耗时。',
+      '并发同步时收集子脚本输出后按 Provider 顺序展示,避免多进程日志互相穿插。',
+    ],
+  },
   {
     version: 'v0.0.15',
     updatedAt: '2026-06-06',
@@ -1811,6 +1819,27 @@ function runNode(script, args = [], options = {}) {
   return typeof res.status === 'number' ? res.status : 1;
 }
 
+function runNodeBuffered(script, args = [], options = {}) {
+  const label = options.label || path.basename(script || '子脚本');
+  if (script && !fs.existsSync(script)) {
+    return Promise.resolve({ status: 127, output: `缺少辅助脚本:${label}` });
+  }
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [script, ...args], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk.toString(); });
+    child.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    child.on('error', (err) => resolve({ status: 1, output: err.message }));
+    child.on('close', (code, signal) => resolve({
+      status: typeof code === 'number' ? code : 1,
+      output: output.trim(),
+      signal,
+    }));
+  });
+}
+
 function isValidProviderId(value) {
   return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
 }
@@ -2201,35 +2230,38 @@ async function syncAllProviders(ask) {
   const allSyncBackup = createConfigBackup('sync-all-providers');
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
-  info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
+  const concurrency = Math.min(3, rows.length);
+  info(`开始同步全部 ${rows.length} 个 API，并发 ${concurrency} 个，请稍等...`);
+  const helperPath = path.join(__dirname, 'provider-manage.mjs');
+  const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
+    console.log(`${progressBar(idx + 1, rows.length)} 已加入同步队列: ${row.displayName}`);
+    if (!fs.existsSync(helperPath)) {
+      return { row, status: 127, output: '缺少外部脚本 provider-manage.mjs' };
+    }
+    const startedAt = Date.now();
+    const result = await runNodeBuffered(helperPath, ['sync', '--no-backup', row.id], { label: 'provider-manage.mjs' });
+    return { row, ...result, durationMs: Date.now() - startedAt };
+  });
   let successCount = 0, failCount = 0;
   const detailLines = [];
-  for (const [idx, row] of rows.entries()) {
-    console.log('');
-    console.log(`${progressBar(idx+1, rows.length)} 正在同步 ${row.displayName}...`);
-    const helperPath = path.join(__dirname, 'provider-manage.mjs');
-    if (!fs.existsSync(helperPath)) {
-      failCount++;
-      detailLines.push(color(`⚠️ ${formatProviderRow(row)}: 缺少外部脚本 provider-manage.mjs`, C.white));
-      detailLines.push(color('新增 0 个,删除 0 个,当前数量保持不变', C.white));
-      continue;
-    }
-    const status = runNode(helperPath, ['sync', '--no-backup', row.id], { label: 'provider-manage.mjs' });
+  for (const item of syncResults) {
+    const row = item.row;
     const freshCfg = readJson(CONFIG, {});
-    const before = beforeCounts.get(row.id) ?? 0;
     const after = Array.isArray(freshCfg.models?.providers?.[row.id]?.models) ? freshCfg.models.providers[row.id].models.length : 0;
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = getProviderModelIds(freshCfg, row.id);
     const { added, removed } = formatModelDelta(beforeIds, afterIds);
-    if (status === 0) {
+    const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
+    if (item.status === 0) {
       successCount++;
-      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${after} 个`, C.white));
+      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${after} 个${seconds}`, C.white));
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
-      detailLines.push(color(`⚠️ ${formatProviderRow(row)}: /models 探测失败`, C.white));
+      detailLines.push(color(`⚠️ ${formatProviderRow(row)}: /models 探测失败${seconds}`, C.white));
       detailLines.push(color(`新增 0 个,删除 0 个,当前 ${after} 个`, C.white));
+      if (item.output) detailLines.push(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
     }
   }
   const afterCfg = readJson(CONFIG, {});
