@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.15',
+    updatedAt: '2026-06-06',
+    summary: [
+      '模型同步改为与服务商 /models 返回结果保持一致,同步时显式替换对应 provider 的 models 数组。',
+      '服务商已下架的模型会从本地 provider.models 中移除,不再因 OpenClaw 默认防误删保护导致探测失败。',
+    ],
+  },
+  {
     version: 'v0.0.14',
     updatedAt: '2026-06-06',
     summary: [

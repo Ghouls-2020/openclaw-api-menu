@@ -59,8 +59,8 @@ function writeJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
-function runConfigPatch(patch) {
-  return spawnSync('openclaw', ['config', 'patch', '--stdin'], {
+function runConfigPatch(patch, extraArgs = []) {
+  return spawnSync('openclaw', ['config', 'patch', ...extraArgs, '--stdin'], {
     input: JSON.stringify(patch, null, 2),
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
@@ -387,7 +387,7 @@ if (action === 'sync') {
         models: modelRefPatch,
       },
     },
-  });
+  }, ['--replace-path', `models.providers.${providerName}.models`]);
   if (patchRes.status !== 0) {
     console.error('Failed to apply config patch');
     if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
