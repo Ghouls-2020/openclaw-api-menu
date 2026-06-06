@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.26',
+    updatedAt: '2026-06-06',
+    summary: [
+      '同步模型发现新增模型时,明确提示 2026.5.28 运行时模型目录可能需要重启 Gateway 才会立即可用。',
+      '单个同步和全部同步新增模型后均提供可选的立即重启 Gateway,避免新模型切换后被旧运行时缓存误判。',
+    ],
+  },
+  {
     version: 'v0.0.25',
     updatedAt: '2026-06-06',
     summary: [
@@ -2490,6 +2498,7 @@ async function syncAllProviders(ask) {
     info('若有失败,请查看上方对应 API 的报错详情(常见原因:Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表)。');
   }
   success('配置已更新。');
+  await promptRestartForNewModels(ask, addedTotal);
   await backPrompt(ask);
 }
 
@@ -2552,6 +2561,7 @@ async function syncProvider(ask) {
       for (const line of formatModelListBlock('➕', '新增模型', added)) console.log(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) console.log(color(line, C.white));
       success('配置已更新。');
+      await promptRestartForNewModels(ask, added.length);
     } else {
       danger(`⚠️ ${formatProviderRow(row)}: /models 探测失败,请检查日志或配置后重试。`);
       info('请查看上方报错详情(常见原因:Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表)。');
@@ -3439,6 +3449,22 @@ async function restartGateway(ask) {
   } else {
     await finishScreen(ask, [color('Gateway 重启失败,请检查环境或手动执行命令排查。', C.red, C.bold)]);
   }
+}
+
+async function promptRestartForNewModels(ask, addedCount) {
+  if (!addedCount || addedCount <= 0) return false;
+  warn(`本次同步新增了 ${addedCount} 个模型。`);
+  warn('OpenClaw 2026.5.28 对新增模型的运行时目录/允许列表热刷新可能不完整;如果马上切换新模型,可能需要重启 Gateway 后才会稳定生效。');
+  const answer = (await ask(color('是否现在重启 Gateway 以刷新新增模型？(y/N): ', C.yellow, C.bold))).trim().toLowerCase();
+  if (answer !== 'y' && answer !== 'yes') return false;
+  console.log(color('正在重启 Gateway，请稍等...', C.yellow, C.bold));
+  const res = runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
+  if (res.status === 0) {
+    success('Gateway 重启命令已执行完成。');
+    return true;
+  }
+  danger('Gateway 重启失败,请稍后手动执行 openclaw gateway restart。');
+  return false;
 }
 
 function compareReleaseVersions(a, b) {
