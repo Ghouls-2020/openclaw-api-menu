@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.30',
+    updatedAt: '2026-06-06',
+    summary: [
+      '取消换模型检测超时时的额外风险提示文案,避免误导用户把临时检测结果当成切换结论。',
+      '检测失败后仍保留“再测一次 / 仍然切换 / 取消”的交互。',
+    ],
+  },
+  {
     version: 'v0.0.29',
     updatedAt: '2026-06-06',
     summary: [
@@ -1811,7 +1819,6 @@ async function confirmSwitchWhenModelCheckFailed(ask, modelStatus, retryDetect =
     } else if (currentStatus?.status === 'model_not_found') {
       warn('检测到模型不存在或服务商未开放该模型;如果仍然切换,实际调用可能失败。');
     } else if (isTimeout) {
-      warn('检测超时可能是临时误判;也可能表示模型当前不可用。');
     }
     console.log(`${color('1.  ', C.white, C.bold)}再测一次`);
     console.log(`${color('2.  ', C.white, C.bold)}仍然切换`);
