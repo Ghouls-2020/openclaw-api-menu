@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.19',
+    updatedAt: '2026-06-06',
+    summary: [
+      '恢复“全部同步”的旧式进度显示文案,重新显示“正在同步 XXX...”。',
+      '仅调整显示方式,底层仍保留并发拉取模型列表和一次性 config patch。',
+    ],
+  },
+  {
     version: 'v0.0.18',
     updatedAt: '2026-06-06',
     summary: [
@@ -2286,9 +2294,9 @@ async function syncAllProviders(ask) {
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   const concurrency = Math.min(3, rows.length);
-  info(`开始同步全部 ${rows.length} 个 API，并发拉取模型列表，最后统一写入一次配置...`);
+  info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
-    console.log(`${progressBar(idx + 1, rows.length)} 已加入同步队列: ${row.displayName}`);
+    console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
     const startedAt = Date.now();
     try {
       const provider = beforeCfg.models?.providers?.[row.id];
