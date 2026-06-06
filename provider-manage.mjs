@@ -260,7 +260,7 @@ if (action === 'remove') {
     }
   }
   pruneModelSelection(cfg, providerName);
-  const modelRefPatch = {};
+  const modelRefPatch = { [`${providerName}/*`]: null };
   for (const key of Object.keys(modelMap)) {
     const [pfx] = key.split('/');
     if (pfx.toLowerCase() === providerName.toLowerCase()) modelRefPatch[key] = null;
@@ -363,7 +363,7 @@ if (action === 'sync') {
       removed += 1;
     }
   }
-  const modelRefPatch = {};
+  const modelRefPatch = { [`${providerName}/*`]: {} };
   for (const ref of wanted) {
     if (!modelMap[ref]) {
       modelRefPatch[ref] = {};

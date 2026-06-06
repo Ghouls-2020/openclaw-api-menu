@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.44',
+    updatedAt: '2026-06-06',
+    summary: [
+      '新增/同步 Provider 时自动维护 agents.defaults.models 的 provider/* 通配 allowlist。',
+      'Provider 改名时同步迁移 provider/* 通配项,让新服务商后续新增模型默认可被当前 agent 使用。',
+    ],
+  },
+  {
     version: 'v0.0.43',
     updatedAt: '2026-06-06',
     summary: [
@@ -2547,6 +2555,7 @@ async function syncAllProviders(ask) {
       };
       patchPayload.models.providers[row.id] = providerPatch;
       replacePaths.push(`models.providers.${row.id}.models`);
+      patchPayload.agents.defaults.models[`${row.id}/*`] = {};
       const wanted = new Set(item.ids.map((id) => `${row.id}/${id}`));
       for (const ref of wanted) {
         if (!beforeCfg.agents?.defaults?.models?.[ref]) patchPayload.agents.defaults.models[ref] = {};
@@ -2801,6 +2810,11 @@ async function modifyProvider(ask) {
         models: { providers: { [row.id]: provider } },
       };
       if (Object.keys(modelRefPatch).length) {
+        patchPayload.agents = { defaults: { models: modelRefPatch } };
+      }
+      if (providerIdChanged) {
+        modelRefPatch[`${oldProviderId}/*`] = null;
+        modelRefPatch[`${newProviderId}/*`] = {};
         patchPayload.agents = { defaults: { models: modelRefPatch } };
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;

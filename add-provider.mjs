@@ -191,7 +191,7 @@ displayNames[providerName] = providerDisplayName;
 writeJson(DISPLAY_NAMES, displayNames);
 
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
-const modelsPatch = {};
+const modelsPatch = { [`${providerName}/*`]: {} };
 for (const id of ids) modelsPatch[`${providerName}/${id}`] = {};
 
 const backup = createConfigBackup();
