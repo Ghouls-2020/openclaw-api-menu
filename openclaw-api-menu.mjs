@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.35',
+    updatedAt: '2026-06-06',
+    summary: [
+      '调整“全部同步”失败结果块,同步失败时直接显示失败原因。',
+      '失败 Provider 不再展示当前模型数/新增引用/移除过期引用等无意义字段。',
+    ],
+  },
+  {
     version: 'v0.0.34',
     updatedAt: '2026-06-06',
     summary: [
@@ -2491,17 +2499,14 @@ async function syncAllProviders(ask) {
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
+      const reason = String(item.output || '未知原因').split('\n').map((line) => line.trim()).filter(Boolean).slice(-3).join(' / ');
       const failLines = [
         color(`同步失败 Provider: ${row.id}`, C.white),
         color(`显示名称: ${row.displayName}`, C.white),
-        color(`当前模型数: ${beforeIds.length}${seconds}`, C.white),
-        color('新增引用: 0', C.white),
-        color('移除过期引用: 0', C.white),
+        color(`失败原因: ${reason}${seconds}`, C.white),
       ];
       for (const line of failLines) console.log(line);
-      if (item.output) console.log(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
       detailLines.push(...failLines);
-      if (item.output) detailLines.push(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
     }
   }
   if (successCount > 0) {
