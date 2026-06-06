@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.37',
+    updatedAt: '2026-06-06',
+    summary: [
+      '修正“全部同步”并发控制实际未生效的问题,现在真正最多 5 个 Provider 并发。',
+      '移除遗留 detailLines 收集逻辑,确保不会再出现重复的“同步明细”汇总输出。',
+    ],
+  },
+  {
     version: 'v0.0.36',
     updatedAt: '2026-06-06',
     summary: [
@@ -2454,25 +2462,30 @@ async function syncAllProviders(ask) {
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   const concurrency = Math.min(5, rows.length);
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
-  const syncPromises = rows.map(async (row) => {
-    const startedAt = Date.now();
-    try {
-      const provider = beforeCfg.models?.providers?.[row.id];
-      const ids = await fetchProviderModelIds(provider);
-      return { row, status: 0, ids, durationMs: Date.now() - startedAt };
-    } catch (err) {
-      return { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
+  const syncResults = new Array(rows.length);
+  let nextSyncIndex = 0;
+  const workers = Array.from({ length: concurrency }, async () => {
+    while (nextSyncIndex < rows.length) {
+      const idx = nextSyncIndex++;
+      const row = rows[idx];
+      const startedAt = Date.now();
+      try {
+        const provider = beforeCfg.models?.providers?.[row.id];
+        const ids = await fetchProviderModelIds(provider);
+        syncResults[idx] = { row, status: 0, ids, durationMs: Date.now() - startedAt };
+      } catch (err) {
+        syncResults[idx] = { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
+      }
     }
   });
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
   const replacePaths = [];
   let successCount = 0, failCount = 0;
-  const detailLines = [];
-  for (const [idx, promise] of syncPromises.entries()) {
-    const row = rows[idx];
+  for (const [idx, row] of rows.entries()) {
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
-    const item = await promise;
+    while (!syncResults[idx]) await new Promise((resolve) => setTimeout(resolve, 50));
+    const item = syncResults[idx];
     const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
@@ -2502,9 +2515,6 @@ async function syncAllProviders(ask) {
         color(`移除过期引用: ${removed.length}`, C.white),
       ];
       for (const line of syncedLines) console.log(line);
-      detailLines.push(...syncedLines);
-      for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
-      for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
       const reason = String(item.output || '未知原因').split('\n').map((line) => line.trim()).filter(Boolean).slice(-3).join(' / ');
@@ -2514,9 +2524,9 @@ async function syncAllProviders(ask) {
         color(`失败原因: ${reason}${seconds}`, C.white),
       ];
       for (const line of failLines) console.log(line);
-      detailLines.push(...failLines);
     }
   }
+  await Promise.all(workers);
   if (successCount > 0) {
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
