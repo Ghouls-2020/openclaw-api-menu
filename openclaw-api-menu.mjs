@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.23',
+    updatedAt: '2026-06-06',
+    summary: [
+      '换模型检测遇到余额不足、额度不足、认证失败或模型不存在时,不再允许强制切换。',
+      'API billing error 会明确提示充值/换 key/换模型,避免用户误以为切换成功后又变成其他模型。',
+    ],
+  },
+  {
     version: 'v0.0.22',
     updatedAt: '2026-06-06',
     summary: [
@@ -1524,6 +1532,19 @@ function normalizeProbeSuccessShape(endpoint, data) {
 function classifyProbeFailure({ endpoint, res, data, parseError }) {
   const rawMessage = data?.error?.message || data?.message || parseError || `HTTP ${res?.status || 0}`;
   const errMsg = String(rawMessage || '').toLowerCase();
+  if (
+    errMsg.includes('billing') ||
+    errMsg.includes('insufficient balance') ||
+    errMsg.includes('insufficient credits') ||
+    errMsg.includes('out of credits') ||
+    errMsg.includes('run out of credits') ||
+    errMsg.includes('quota exceeded') ||
+    errMsg.includes('余额不足') ||
+    errMsg.includes('额度不足') ||
+    errMsg.includes('欠费')
+  ) {
+    return { status: 'billing_error', error: summarizeErrorMessage(rawMessage || 'API 余额/额度不足') };
+  }
   if (res?.status === 401 || res?.status === 403 || errMsg.includes('unauthorized') || errMsg.includes('invalid api key')) {
     return { status: 'auth_failed', error: summarizeErrorMessage(rawMessage) };
   }
@@ -1732,17 +1753,25 @@ async function detectModelStatus(provider, modelId, options = {}) {
 async function confirmSwitchWhenModelCheckFailed(ask, modelStatus, retryDetect = null) {
   let currentStatus = modelStatus;
   while (currentStatus?.status !== 'available') {
-    const isTimeout = currentStatus?.status === 'timeout' || /超时|timeout/i.test(String(currentStatus?.error || ''));
+    const errText = String(currentStatus?.error || '');
+    const isTimeout = currentStatus?.status === 'timeout' || /超时|timeout/i.test(errText);
+    const isHardFailure = ['billing_error', 'auth_failed', 'model_not_found'].includes(String(currentStatus?.status || ''));
     warn(`该模型检测未通过:${formatModelCheckResult(currentStatus)}`);
     console.log(`${color('1.  ', C.white, C.bold)}再测一次`);
-    if (!isTimeout) {
+    if (!isTimeout && !isHardFailure) {
       console.log(`${color('2.  ', C.white, C.bold)}仍然切换`);
+    } else if (currentStatus?.status === 'billing_error') {
+      warn('检测到 API 余额/额度不足;请充值、换 key 或换其他模型。本次不提供强制切换。');
+    } else if (currentStatus?.status === 'auth_failed') {
+      warn('检测到 API Key/权限异常;请先修复 key。本次不提供强制切换。');
+    } else if (currentStatus?.status === 'model_not_found') {
+      warn('检测到模型不存在或服务商未开放该模型;本次不提供强制切换。');
     } else {
       warn('检测超时通常表示该模型当前不可用;为避免误切换,本次不提供强制切换。');
     }
     console.log(`${color('0.  ', C.white, C.bold)}取消`);
     const answer = await ask(color('请输入你的选择: ', C.bold));
-    if (!isTimeout && (answer === '2' || answer.toLowerCase() === 'y')) return true;
+    if (!isTimeout && !isHardFailure && (answer === '2' || answer.toLowerCase() === 'y')) return true;
     if (answer === '1' && typeof retryDetect === 'function') {
       info(`正在重新检测，请稍等...`);
       currentStatus = await retryDetect();
