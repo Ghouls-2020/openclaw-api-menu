@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.20',
+    updatedAt: '2026-06-06',
+    summary: [
+      '真正恢复“全部同步”的旧式显示:按 Provider 顺序逐段展示“正在同步 XXX...”和结果。',
+      '并发执行期间不再提前刷出队列行,显示体验接近旧版,底层仍保留并发和一次性 config patch。',
+    ],
+  },
+  {
     version: 'v0.0.19',
     updatedAt: '2026-06-06',
     summary: [
@@ -2296,7 +2304,6 @@ async function syncAllProviders(ask) {
   const concurrency = Math.min(3, rows.length);
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
-    console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
     const startedAt = Date.now();
     try {
       const provider = beforeCfg.models?.providers?.[row.id];
@@ -2310,8 +2317,10 @@ async function syncAllProviders(ask) {
   const replacePaths = [];
   let successCount = 0, failCount = 0;
   const detailLines = [];
-  for (const item of syncResults) {
+  for (const [idx, item] of syncResults.entries()) {
     const row = item.row;
+    console.log('');
+    console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
     const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
@@ -2333,13 +2342,19 @@ async function syncAllProviders(ask) {
         const [pfx] = ref.split('/');
         if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
       }
-      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white));
+      const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white);
+      console.log(resultLine);
+      detailLines.push(resultLine);
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
-      detailLines.push(color(`⚠️ ${formatProviderRow(row)}: /models 探测失败${seconds}`, C.white));
-      detailLines.push(color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white));
+      const failLine = color(`⚠️ ${formatProviderRow(row)}: /models 探测失败${seconds}`, C.white);
+      const keepLine = color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white);
+      console.log(failLine);
+      console.log(keepLine);
+      detailLines.push(failLine);
+      detailLines.push(keepLine);
       if (item.output) detailLines.push(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
     }
   }
@@ -2366,6 +2381,7 @@ async function syncAllProviders(ask) {
   console.log(color(`同步摘要:共检查 ${rows.length} 个提供商,新增 ${addedTotal} 个模型,移除 ${removedTotal} 个模型,${unchangedProviders} 个提供商模型数未变化。`, C.white));
   info(`本次全部同步仅备份一次配置: ${allSyncBackup}`);
   if (detailLines.length) {
+    console.log(color('同步明细:', C.gray));
     for (const line of detailLines) console.log(line);
   }
   if (failCount > 0) {
