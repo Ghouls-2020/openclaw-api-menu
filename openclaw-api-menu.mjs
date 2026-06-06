@@ -20,7 +20,7 @@ const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
-const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 15000;
+const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 5000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_TEST_PROMPT = 'ping';
 const MODEL_STATUS_DEFAULT_PROMPT = '请用中文回答：如果你能正常看到这条请求，请回复“模型检测通过”，并补充一句不超过20字的自然中文。';
@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.18',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将 Provider /models 同步超时从 15 秒降为 5 秒,避免慢接口拖累“全部同步”。',
+      '全部同步和 provider-manage 的模型拉取统一使用 5 秒超时。',
+    ],
+  },
   {
     version: 'v0.0.17',
     updatedAt: '2026-06-06',
