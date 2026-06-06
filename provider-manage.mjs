@@ -252,19 +252,15 @@ if (action === 'remove') {
   delete displayNames[providerName];
   writeJson(DISPLAY_NAMES, displayNames);
   let removed = 0;
+  const modelRefPatch = { [`${providerName}/*`]: null };
   for (const key of Object.keys(modelMap)) {
     const [pfx] = key.split('/');
     if (pfx.toLowerCase() === providerName.toLowerCase()) {
-      delete modelMap[key];
+      modelRefPatch[key] = null;
       removed += 1;
     }
   }
   pruneModelSelection(cfg, providerName);
-  const modelRefPatch = { [`${providerName}/*`]: null };
-  for (const key of Object.keys(modelMap)) {
-    const [pfx] = key.split('/');
-    if (pfx.toLowerCase() === providerName.toLowerCase()) modelRefPatch[key] = null;
-  }
   const patchRes = runConfigPatch({
     models: {
       providers: {
@@ -356,13 +352,6 @@ if (action === 'sync') {
   }));
   const wanted = new Set(ids.map(id => `${providerName}/${id}`));
   let added = 0, removed = 0;
-  for (const key of Object.keys(modelMap)) {
-    const [pfx] = key.split('/');
-    if (pfx.toLowerCase() === providerName.toLowerCase() && !wanted.has(key)) {
-      delete modelMap[key];
-      removed += 1;
-    }
-  }
   const modelRefPatch = { [`${providerName}/*`]: {} };
   for (const ref of wanted) {
     if (!modelMap[ref]) added += 1;
@@ -373,6 +362,7 @@ if (action === 'sync') {
     const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
     if (pfx.toLowerCase() === providerName.toLowerCase() && isEmptyObject) {
       modelRefPatch[key] = null;
+      if (!wanted.has(key)) removed += 1;
     }
   }
   const patchRes = runConfigPatch({

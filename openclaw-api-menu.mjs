@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.47',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复模型测活 SSE 流解析重复处理历史 chunk 的问题,改为按缓冲区只处理新增完整行。',
+      '修复 provider-manage 同步时先 delete modelMap 导致过期模型 ref 无法作为 null patch 删除的问题。',
+    ],
+  },
+  {
     version: 'v0.0.46',
     updatedAt: '2026-06-07',
     summary: [
@@ -1767,55 +1775,69 @@ async function readChatCompletionProbeStream(res) {
   if (!reader) return { rawText: await res.text(), earlyData: null };
   const decoder = new TextDecoder();
   let rawText = '';
+  let buffer = '';
   let returnedModel = '';
   let content = '';
   let reasoningContent = '';
   let usage = null;
   let chunkCount = 0;
+
+  const handleLine = async (rawLine) => {
+    const line = rawLine.trim();
+    if (!line || !line.startsWith('data:')) return null;
+    const jsonStr = line.slice(5).trim();
+    if (!jsonStr || jsonStr === '[DONE]') return null;
+    try {
+      const chunk = JSON.parse(jsonStr);
+      chunkCount += 1;
+      if (!returnedModel && chunk?.model) returnedModel = String(chunk.model);
+      if (chunk?.usage) usage = chunk.usage;
+      const delta = chunk?.choices?.[0]?.delta;
+      if (delta?.content) content += String(delta.content);
+      if (delta?.reasoning_content) reasoningContent += String(delta.reasoning_content);
+      if (delta?.thinking) reasoningContent += String(delta.thinking);
+      const hasValidChoice = Array.isArray(chunk?.choices) && chunk.choices.length > 0;
+      const hasRealContent = delta?.content || delta?.reasoning_content || delta?.thinking;
+      const finishReason = chunk?.choices?.[0]?.finish_reason;
+      // 纯 role chunk(如 {role:"assistant"})不等同于模型可用,等后续真的有内容/reasoning了再判定
+      if (hasValidChoice && (hasRealContent || finishReason)) {
+        try { await reader.cancel(); } catch {}
+        return {
+          rawText,
+          earlyData: {
+            model: returnedModel || undefined,
+            choices: [{ message: { role: 'assistant', content: content || null, reasoning_content: reasoningContent || undefined }, finish_reason: finishReason || undefined }],
+            usage,
+            isStreamAssembled: true,
+            isEarlyStreamProbe: true,
+            _chunkCount: chunkCount,
+          },
+        };
+      }
+    } catch {}
+    return null;
+  };
+
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      rawText += decoder.decode(value, { stream: true });
-      const lines = rawText.split(/\r?\n/);
+      const text = decoder.decode(value, { stream: true });
+      rawText += text;
+      buffer += text;
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
       for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (!line || !line.startsWith('data:')) continue;
-        const jsonStr = line.slice(5).trim();
-        if (!jsonStr || jsonStr === '[DONE]') continue;
-        try {
-          const chunk = JSON.parse(jsonStr);
-          chunkCount += 1;
-          if (!returnedModel && chunk?.model) returnedModel = String(chunk.model);
-          if (chunk?.usage) usage = chunk.usage;
-          const delta = chunk?.choices?.[0]?.delta;
-          if (delta?.content) content += String(delta.content);
-          if (delta?.reasoning_content) reasoningContent += String(delta.reasoning_content);
-          if (delta?.thinking) reasoningContent += String(delta.thinking);
-          const hasValidChoice = Array.isArray(chunk?.choices) && chunk.choices.length > 0;
-          const hasRealContent = delta?.content || delta?.reasoning_content || delta?.thinking;
-          const finishReason = chunk?.choices?.[0]?.finish_reason;
-          // 纯 role chunk(如 {role:"assistant"})不等同于模型可用,等后续真的有内容/reasoning了再判定
-          if (hasValidChoice && (hasRealContent || finishReason)) {
-            try { await reader.cancel(); } catch {}
-            return {
-              rawText,
-              earlyData: {
-                model: returnedModel || undefined,
-                choices: [{ message: { role: 'assistant', content: content || null, reasoning_content: reasoningContent || undefined }, finish_reason: finishReason || undefined }],
-                usage,
-                isStreamAssembled: true,
-                isEarlyStreamProbe: true,
-                _chunkCount: chunkCount,
-              },
-            };
-          }
-        } catch {}
+        const early = await handleLine(rawLine);
+        if (early) return early;
       }
     }
   } finally {
-    rawText += decoder.decode();
+    const tail = decoder.decode();
+    rawText += tail;
+    buffer += tail;
   }
+  if (buffer.trim()) await handleLine(buffer);
   return { rawText, earlyData: null };
 }
 
