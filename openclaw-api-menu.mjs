@@ -19,8 +19,8 @@ const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
-const MODEL_STATUS_TIMEOUT_MS = 5000;
-const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 5000;
+const MODEL_STATUS_TIMEOUT_MS = 3000;
+const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_TEST_PROMPT = 'ping';
 const MODEL_STATUS_DEFAULT_PROMPT = '请用中文回答：如果你能正常看到这条请求，请回复“模型检测通过”，并补充一句不超过20字的自然中文。';
@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.32',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将 Provider 检测/同步超时从 5 秒调整为 3 秒,减少慢接口等待。',
+      '全部同步并发从全并发调整为最多 5 个,API 状态检测并发也从 3 个调整为 5 个。',
+    ],
+  },
   {
     version: 'v0.0.31',
     updatedAt: '2026-06-06',
@@ -2199,7 +2207,7 @@ async function chooseProvider(ask, prompt = '选择提供商编号: ', title = '
     return null;
   }
   const statusMap = new Map();
-  await mapWithConcurrency(rows, 3, async (row) => {
+  await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
     const provider = cfg.models?.providers?.[row.id];
     const status = await detectProviderStatus(provider);
     statusMap.set(row.id, status);
@@ -2412,7 +2420,7 @@ async function syncAllProviders(ask) {
   const allSyncBackup = createConfigBackup('sync-all-providers');
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
-  const concurrency = rows.length;
+  const concurrency = Math.min(5, rows.length);
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const syncPromises = rows.map(async (row) => {
     const startedAt = Date.now();
@@ -2512,7 +2520,7 @@ async function syncProvider(ask) {
       return null;
     }
     const statusMap = new Map();
-    await mapWithConcurrency(rows, 3, async (row) => {
+    await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
       const provider = cfg.models?.providers?.[row.id];
       const status = await detectProviderStatus(provider);
       statusMap.set(row.id, status);

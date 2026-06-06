@@ -8,7 +8,7 @@ import { spawnSync } from 'child_process';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(SCRIPT_DIR, 'provider-display-names.json');
-const FETCH_TIMEOUT_MS = 15000;
+const FETCH_TIMEOUT_MS = 3000;
 const CONFIG_BACKUP_KEEP_MAX = 20;
 
 const args = process.argv.slice(2);
