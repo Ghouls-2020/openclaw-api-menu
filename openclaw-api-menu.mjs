@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.22',
+    updatedAt: '2026-06-06',
+    summary: [
+      '换模型时如果模型检测超时,不再提供“仍然切换”选项,避免把不可用模型写入后会话表现成回退/变成其他模型。',
+      '超时场景只允许重新检测或取消,其他非超时失败仍保留强制切换入口。',
+    ],
+  },
+  {
     version: 'v0.0.21',
     updatedAt: '2026-06-06',
     summary: [
@@ -1724,12 +1732,17 @@ async function detectModelStatus(provider, modelId, options = {}) {
 async function confirmSwitchWhenModelCheckFailed(ask, modelStatus, retryDetect = null) {
   let currentStatus = modelStatus;
   while (currentStatus?.status !== 'available') {
+    const isTimeout = currentStatus?.status === 'timeout' || /超时|timeout/i.test(String(currentStatus?.error || ''));
     warn(`该模型检测未通过:${formatModelCheckResult(currentStatus)}`);
     console.log(`${color('1.  ', C.white, C.bold)}再测一次`);
-    console.log(`${color('2.  ', C.white, C.bold)}仍然切换`);
+    if (!isTimeout) {
+      console.log(`${color('2.  ', C.white, C.bold)}仍然切换`);
+    } else {
+      warn('检测超时通常表示该模型当前不可用;为避免误切换,本次不提供强制切换。');
+    }
     console.log(`${color('0.  ', C.white, C.bold)}取消`);
     const answer = await ask(color('请输入你的选择: ', C.bold));
-    if (answer === '2' || answer.toLowerCase() === 'y') return true;
+    if (!isTimeout && (answer === '2' || answer.toLowerCase() === 'y')) return true;
     if (answer === '1' && typeof retryDetect === 'function') {
       info(`正在重新检测，请稍等...`);
       currentStatus = await retryDetect();
