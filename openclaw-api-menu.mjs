@@ -22,11 +22,11 @@ const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 3000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
-const MODEL_STATUS_TEST_PROMPT = 'ping';
-const MODEL_STATUS_DEFAULT_PROMPT = '请用中文回答：如果你能正常看到这条请求，请回复“模型检测通过”，并补充一句不超过20字的自然中文。';
+const MODEL_STATUS_TEST_PROMPT = '请用一句中文说说今天适合做什么。';
+const MODEL_STATUS_DEFAULT_PROMPT = '请用一句自然的中文回答：今天适合做什么？';
 const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
 const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
-const MODEL_STATUS_CACHE_SCHEMA = 'v3';
+const MODEL_STATUS_CACHE_SCHEMA = 'v4';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
 const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.40',
+    updatedAt: '2026-06-06',
+    summary: [
+      '调整模型测活 prompt,不再使用 hi/ping 或包含“模型检测”的明显探活内容。',
+      '测活请求改为自然短问题,降低被服务商识别为健康检查的概率。',
+    ],
+  },
   {
     version: 'v0.0.39',
     updatedAt: '2026-06-06',
