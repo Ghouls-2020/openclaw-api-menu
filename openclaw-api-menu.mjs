@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.27',
+    updatedAt: '2026-06-06',
+    summary: [
+      '撤掉“sessions.patch 实时生效”的额外成功提示,避免误导为新增模型无需重启即可稳定使用。',
+      '会话模型切换仍优先使用 sessions.patch,但新增模型是否立即可用以运行时模型目录刷新为准。',
+    ],
+  },
+  {
     version: 'v0.0.26',
     updatedAt: '2026-06-06',
     summary: [
@@ -1056,7 +1064,6 @@ function applySelectedSessionSync(selection, ref) {
   if (result.synced > 0) {
     const appliedKeys = result.syncedKeys?.length ? result.syncedKeys : (selection.sessionKeys || []).slice(0, result.synced);
     success(buildSessionSyncSuccessMessage(ref, appliedKeys));
-    if (result.rpcSynced > 0) success(`其中 ${result.rpcSynced} 个会话已通过 Gateway sessions.patch 实时生效。`);
     if (result.fileSynced > 0) {
       warn(`${result.fileSynced} 个会话因 Gateway sessions.patch 不可用,已回退写入 sessions.json。`);
       warn('如果当前会话没有立即生效,请重启 Gateway 或批准本机 CLI 的 sessions.patch 权限。');
