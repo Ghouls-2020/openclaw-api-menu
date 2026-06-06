@@ -22,11 +22,11 @@ const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 3000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
-const MODEL_STATUS_TEST_PROMPT = '请用一句中文说说今天适合做什么。';
-const MODEL_STATUS_DEFAULT_PROMPT = '请用一句自然的中文回答：今天适合做什么？';
+const MODEL_STATUS_TEST_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
+const MODEL_STATUS_DEFAULT_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
 const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
 const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
-const MODEL_STATUS_CACHE_SCHEMA = 'v4';
+const MODEL_STATUS_CACHE_SCHEMA = 'v5';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
 const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
@@ -56,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.41',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将模型测活 prompt 改为“给我解释一下 HTTP 和 HTTPS 的区别，用3点说明”。',
+      '继续避免 hi/ping/模型检测 等明显探活内容,让测活请求更像正常用户问题。',
+    ],
+  },
   {
     version: 'v0.0.40',
     updatedAt: '2026-06-06',
