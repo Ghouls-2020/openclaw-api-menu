@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.25',
+    updatedAt: '2026-06-06',
+    summary: [
+      '切换 Telegram 会话模型时优先走 Gateway sessions.patch,让运行中的 Gateway 立即应用 session override。',
+      '当 sessions.patch 因权限/scope 等原因失败时,回退写 sessions.json 并提示可能需要重启 Gateway 才会即时生效。',
+    ],
+  },
+  {
     version: 'v0.0.24',
     updatedAt: '2026-06-06',
     summary: [
@@ -801,29 +809,62 @@ function applySessionModelOverrideInStore(store, sessionKey, ref) {
   return { ok: true };
 }
 
+function patchSessionModelViaGateway(sessionKey, ref) {
+  const params = { key: sessionKey, model: ref };
+  const res = runCommand('openclaw', ['gateway', 'call', 'sessions.patch', '--json', '--params', JSON.stringify(params)], {
+    cwd: WORKSPACE,
+    timeout: 12000,
+    encoding: 'utf8',
+    maxBuffer: 2 * 1024 * 1024,
+  });
+  const output = `${res.stdout || ''}${res.stderr || ''}`.trim();
+  if (res.status !== 0) return { ok: false, reason: output || `sessions.patch 退出码 ${res.status}` };
+  try {
+    const parsed = JSON.parse(String(res.stdout || '').trim() || '{}');
+    if (parsed?.ok === false) return { ok: false, reason: parsed?.error?.message || parsed?.error || output || 'sessions.patch failed' };
+    return { ok: true, resolved: parsed?.resolved || parsed?.session?.resolved || null };
+  } catch {
+    return { ok: true, resolved: null };
+  }
+}
+
 function syncSessionModelOverrides(sessionKeys, ref) {
   const { storePath, store } = listSyncableTelegramSessions(1000);
   if (!fs.existsSync(storePath)) return { ok: false, synced: 0, reason: `会话文件不存在:${storePath}` };
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   let synced = 0;
+  let rpcSynced = 0;
+  let fileSynced = 0;
   const syncedKeys = [];
   const failed = [];
+  const rpcFailed = [];
+  let storeDirty = false;
   for (const key of keys) {
+    const rpcResult = patchSessionModelViaGateway(key, ref);
+    if (rpcResult.ok) {
+      synced += 1;
+      rpcSynced += 1;
+      syncedKeys.push(key);
+      continue;
+    }
+    rpcFailed.push({ key, reason: rpcResult.reason });
     const result = applySessionModelOverrideInStore(store, key, ref);
     if (result.ok) {
       synced += 1;
+      fileSynced += 1;
       syncedKeys.push(key);
+      storeDirty = true;
     } else {
       failed.push({ key, reason: result.reason });
     }
   }
   let backup = '';
-  if (synced > 0) {
+  if (storeDirty) {
     backup = `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(storePath, backup);
     writeJson(storePath, store);
   }
-  return { ok: failed.length === 0, synced, syncedKeys, failed, storePath, backup };
+  return { ok: failed.length === 0, synced, syncedKeys, failed, rpcFailed, rpcSynced, fileSynced, storePath, backup };
 }
 
 function deleteTelegramSessionRecords(sessionKeys) {
@@ -1007,6 +1048,11 @@ function applySelectedSessionSync(selection, ref) {
   if (result.synced > 0) {
     const appliedKeys = result.syncedKeys?.length ? result.syncedKeys : (selection.sessionKeys || []).slice(0, result.synced);
     success(buildSessionSyncSuccessMessage(ref, appliedKeys));
+    if (result.rpcSynced > 0) success(`其中 ${result.rpcSynced} 个会话已通过 Gateway sessions.patch 实时生效。`);
+    if (result.fileSynced > 0) {
+      warn(`${result.fileSynced} 个会话因 Gateway sessions.patch 不可用,已回退写入 sessions.json。`);
+      warn('如果当前会话没有立即生效,请重启 Gateway 或批准本机 CLI 的 sessions.patch 权限。');
+    }
   }
   if (result.failed?.length) warn(`有 ${result.failed.length} 个群聊/会话应用失败，可稍后重试。`);
   return result;
