@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.36',
+    updatedAt: '2026-06-06',
+    summary: [
+      '移除“全部同步”结束后的重复“同步明细”汇总输出。',
+      '全部同步结果只在每个 Provider 完成时逐个展示,避免最后再次打印同一批结果。',
+    ],
+  },
+  {
     version: 'v0.0.35',
     updatedAt: '2026-06-06',
     summary: [
@@ -2531,10 +2539,6 @@ async function syncAllProviders(ask) {
   success(`全部同步完成：成功 ${successCount} 个，失败 ${failCount} 个。`);
   console.log(color(`同步摘要:共检查 ${rows.length} 个提供商,新增 ${addedTotal} 个模型,移除 ${removedTotal} 个模型,${unchangedProviders} 个提供商模型数未变化。`, C.white));
   info(`本次全部同步仅备份一次配置: ${allSyncBackup}`);
-  if (detailLines.length) {
-    console.log(color('同步明细:', C.gray));
-    for (const line of detailLines) console.log(line);
-  }
   if (failCount > 0) {
     info('若有失败,请查看上方对应 API 的报错详情(常见原因:Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表)。');
   }
