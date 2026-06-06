@@ -365,14 +365,13 @@ if (action === 'sync') {
   }
   const modelRefPatch = { [`${providerName}/*`]: {} };
   for (const ref of wanted) {
-    if (!modelMap[ref]) {
-      modelRefPatch[ref] = {};
-      added += 1;
-    }
+    if (!modelMap[ref]) added += 1;
   }
-  for (const key of Object.keys(modelMap)) {
+  for (const [key, value] of Object.entries(modelMap)) {
+    if (key === `${providerName}/*`) continue;
     const [pfx] = key.split('/');
-    if (pfx.toLowerCase() === providerName.toLowerCase() && !wanted.has(key)) {
+    const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+    if (pfx.toLowerCase() === providerName.toLowerCase() && isEmptyObject) {
       modelRefPatch[key] = null;
     }
   }
