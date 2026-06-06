@@ -20,6 +20,7 @@ const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
+const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 15000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_TEST_PROMPT = 'ping';
 const MODEL_STATUS_DEFAULT_PROMPT = '请用中文回答：如果你能正常看到这条请求，请回复“模型检测通过”，并补充一句不超过20字的自然中文。';
@@ -55,6 +56,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.17',
+    updatedAt: '2026-06-06',
+    summary: [
+      '继续优化“全部同步”:并发拉取所有 Provider 的 /models 后汇总为一次 config patch,避免每个 Provider 写一次配置。',
+      '全部同步现在只触发一次 Gateway 配置 reload,减少 hybrid reload 连续触发导致的卡顿。',
+    ],
+  },
   {
     version: 'v0.0.16',
     updatedAt: '2026-06-06',
@@ -1089,6 +1098,9 @@ function writeJson(file, data) {
 function applyConfigPatch(patch, options = {}) {
   const args = ['config', 'patch', '--stdin'];
   if (options.dryRun) args.push('--dry-run');
+  for (const replacePath of options.replacePaths || []) {
+    args.push('--replace-path', replacePath);
+  }
   return runCommand('openclaw', args, {
     input: JSON.stringify(patch, null, 2),
     encoding: 'utf8',
@@ -1924,6 +1936,41 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('musicGenerationModel');
 }
 
+function guessInputCaps(id) {
+  return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
+}
+
+async function fetchProviderModelIds(provider) {
+  const baseUrl = normalizeAndValidateBaseUrl(provider?.baseUrl);
+  if (!baseUrl) throw new Error('Base URL 格式无效');
+  const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PROVIDER_SYNC_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(modelsUrl, {
+      headers: {
+        Authorization: `Bearer ${provider.apiKey}`,
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ''}`);
+    }
+    const data = await res.json();
+    const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+    const ids = [...new Set(rows.map((item) => item?.id).filter(Boolean))];
+    if (!ids.length) throw new Error('No model IDs found in /models response');
+    return ids;
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`请求超时:${PROVIDER_SYNC_FETCH_TIMEOUT_MS}ms`);
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function normalizeModel(displayName, id) {
   return {
     id,
@@ -2231,37 +2278,63 @@ async function syncAllProviders(ask) {
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   const concurrency = Math.min(3, rows.length);
-  info(`开始同步全部 ${rows.length} 个 API，并发 ${concurrency} 个，请稍等...`);
-  const helperPath = path.join(__dirname, 'provider-manage.mjs');
+  info(`开始同步全部 ${rows.length} 个 API，并发拉取模型列表，最后统一写入一次配置...`);
   const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
     console.log(`${progressBar(idx + 1, rows.length)} 已加入同步队列: ${row.displayName}`);
-    if (!fs.existsSync(helperPath)) {
-      return { row, status: 127, output: '缺少外部脚本 provider-manage.mjs' };
-    }
     const startedAt = Date.now();
-    const result = await runNodeBuffered(helperPath, ['sync', '--no-backup', row.id], { label: 'provider-manage.mjs' });
-    return { row, ...result, durationMs: Date.now() - startedAt };
+    try {
+      const provider = beforeCfg.models?.providers?.[row.id];
+      const ids = await fetchProviderModelIds(provider);
+      return { row, status: 0, ids, durationMs: Date.now() - startedAt };
+    } catch (err) {
+      return { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
+    }
   });
+  const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
+  const replacePaths = [];
   let successCount = 0, failCount = 0;
   const detailLines = [];
   for (const item of syncResults) {
     const row = item.row;
-    const freshCfg = readJson(CONFIG, {});
-    const after = Array.isArray(freshCfg.models?.providers?.[row.id]?.models) ? freshCfg.models.providers[row.id].models.length : 0;
+    const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
-    const afterIds = getProviderModelIds(freshCfg, row.id);
+    const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
     const { added, removed } = formatModelDelta(beforeIds, afterIds);
     const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
     if (item.status === 0) {
       successCount++;
-      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${after} 个${seconds}`, C.white));
+      const providerPatch = {
+        ...beforeProvider,
+        models: item.ids.map((id) => normalizeModel(row.displayName || row.id, id)),
+      };
+      patchPayload.models.providers[row.id] = providerPatch;
+      replacePaths.push(`models.providers.${row.id}.models`);
+      const wanted = new Set(item.ids.map((id) => `${row.id}/${id}`));
+      for (const ref of wanted) {
+        if (!beforeCfg.agents?.defaults?.models?.[ref]) patchPayload.agents.defaults.models[ref] = {};
+      }
+      for (const ref of Object.keys(beforeCfg.agents?.defaults?.models || {})) {
+        const [pfx] = ref.split('/');
+        if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
+      }
+      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white));
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
       detailLines.push(color(`⚠️ ${formatProviderRow(row)}: /models 探测失败${seconds}`, C.white));
-      detailLines.push(color(`新增 0 个,删除 0 个,当前 ${after} 个`, C.white));
+      detailLines.push(color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white));
       if (item.output) detailLines.push(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
+    }
+  }
+  if (successCount > 0) {
+    const patchRes = applyConfigPatch(patchPayload, { replacePaths });
+    if (patchRes.status !== 0) {
+      danger('批量写入配置失败。');
+      if (patchRes.stdout) console.log(String(patchRes.stdout).trim());
+      if (patchRes.stderr) console.log(String(patchRes.stderr).trim());
+      await backPrompt(ask);
+      return;
     }
   }
   const afterCfg = readJson(CONFIG, {});
