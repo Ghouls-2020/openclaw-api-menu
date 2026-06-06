@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.45',
+    updatedAt: '2026-06-07',
+    summary: [
+      '临时关闭同步模型后的智能重启 Gateway 逻辑,便于排查新增/删除模型与运行时刷新问题。',
+      '保留 provider/* 通配 allowlist 自动维护;同步流程不再自动触发 openclaw gateway restart。',
+    ],
+  },
+  {
     version: 'v0.0.44',
     updatedAt: '2026-06-06',
     summary: [
@@ -2606,7 +2614,6 @@ async function syncAllProviders(ask) {
     info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');
   }
   success('配置已更新。');
-  restartGatewayForModelChanges(addedTotal, removedTotal);
   await backPrompt(ask);
 }
 
@@ -2669,7 +2676,6 @@ async function syncProvider(ask) {
       for (const line of formatModelListBlock('➕', '新增模型', added)) console.log(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) console.log(color(line, C.white));
       success('配置已更新。');
-      restartGatewayForModelChanges(added.length, removed.length);
     } else {
       danger(`⚠️ ${formatProviderRow(row)}: /models 探测失败,请检查日志或配置后重试。`);
       info('请查看上方报错详情(常见原因:Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表)。');
@@ -3562,19 +3568,6 @@ async function restartGateway(ask) {
   } else {
     await finishScreen(ask, [color('Gateway 重启失败,请检查环境或手动执行命令排查。', C.red, C.bold)]);
   }
-}
-
-function restartGatewayForModelChanges(addedCount, removedCount) {
-  const total = Number(addedCount || 0) + Number(removedCount || 0);
-  if (total <= 0) return { restarted: false, status: 0 };
-  info(`检测到模型列表变化:新增 ${addedCount || 0} 个,删除 ${removedCount || 0} 个;正在自动重启 Gateway 刷新运行时模型目录...`);
-  const res = runCommand('openclaw', ['gateway', 'restart'], { stdio: 'inherit' });
-  if (res.status === 0) {
-    success('Gateway 已自动重启,新增/删除模型的运行时目录已刷新。');
-    return { restarted: true, status: 0 };
-  }
-  danger('Gateway 自动重启失败,请稍后手动执行 openclaw gateway restart。');
-  return { restarted: false, status: res.status || 1 };
 }
 
 
