@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.21',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将“全部同步”的 Provider /models 拉取改为默认全并发,不同服务商可同时检测以进一步缩短耗时。',
+      '仍保留按 Provider 顺序展示结果和一次性 config patch,避免多次触发 Gateway reload。',
+    ],
+  },
+  {
     version: 'v0.0.20',
     updatedAt: '2026-06-06',
     summary: [
@@ -2301,7 +2309,7 @@ async function syncAllProviders(ask) {
   const allSyncBackup = createConfigBackup('sync-all-providers');
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
-  const concurrency = Math.min(3, rows.length);
+  const concurrency = rows.length;
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const syncResults = await mapWithConcurrency(rows, concurrency, async (row, idx) => {
     const startedAt = Date.now();
