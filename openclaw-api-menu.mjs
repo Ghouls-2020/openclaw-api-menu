@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.38',
+    updatedAt: '2026-06-06',
+    summary: [
+      '恢复“全部同步”最终汇总的旧式显示:先输出同步摘要,再按 Provider 输出 ✅/⚠ 单行结果。',
+      '新增/删除模型列表继续在对应 Provider 下展开,不再使用“已同步 Provider/显示名称/当前模型数”块状格式。',
+    ],
+  },
+  {
     version: 'v0.0.37',
     updatedAt: '2026-06-06',
     summary: [
@@ -2481,6 +2489,7 @@ async function syncAllProviders(ask) {
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
   const replacePaths = [];
   let successCount = 0, failCount = 0;
+  const detailLines = [];
   for (const [idx, row] of rows.entries()) {
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
@@ -2490,7 +2499,6 @@ async function syncAllProviders(ask) {
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
     const { added, removed } = formatModelDelta(beforeIds, afterIds);
-    const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
     if (item.status === 0) {
       successCount++;
       const providerPatch = {
@@ -2507,23 +2515,13 @@ async function syncAllProviders(ask) {
         const [pfx] = ref.split('/');
         if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
       }
-      const syncedLines = [
-        color(`已同步 Provider: ${row.id}`, C.white),
-        color(`显示名称: ${row.displayName}`, C.white),
-        color(`当前模型数: ${item.ids.length}${seconds}`, C.white),
-        color(`新增引用: ${added.length}`, C.white),
-        color(`移除过期引用: ${removed.length}`, C.white),
-      ];
-      for (const line of syncedLines) console.log(line);
+      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个`, C.white));
+      for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
+      for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
-      const reason = String(item.output || '未知原因').split('\n').map((line) => line.trim()).filter(Boolean).slice(-3).join(' / ');
-      const failLines = [
-        color(`同步失败 Provider: ${row.id}`, C.white),
-        color(`显示名称: ${row.displayName}`, C.white),
-        color(`失败原因: ${reason}${seconds}`, C.white),
-      ];
-      for (const line of failLines) console.log(line);
+      detailLines.push(color(`⚠ ${formatProviderRow(row)}: /models 探测失败`, C.white));
+      detailLines.push(color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white));
     }
   }
   await Promise.all(workers);
@@ -2546,11 +2544,10 @@ async function syncAllProviders(ask) {
     else if (after < before) removedTotal += (before - after);
     else unchangedProviders++;
   }
-  success(`全部同步完成：成功 ${successCount} 个，失败 ${failCount} 个。`);
-  console.log(color(`同步摘要:共检查 ${rows.length} 个提供商,新增 ${addedTotal} 个模型,移除 ${removedTotal} 个模型,${unchangedProviders} 个提供商模型数未变化。`, C.white));
-  info(`本次全部同步仅备份一次配置: ${allSyncBackup}`);
+  console.log(color(`同步摘要：共检查 ${rows.length} 个提供商，新增 ${addedTotal} 个模型，移除 ${removedTotal} 个模型，${unchangedProviders} 个提供商模型数未变化。`, C.white));
+  for (const line of detailLines) console.log(line);
   if (failCount > 0) {
-    info('若有失败,请查看上方对应 API 的报错详情(常见原因:Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表)。');
+    info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');
   }
   success('配置已更新。');
   await backPrompt(ask);
