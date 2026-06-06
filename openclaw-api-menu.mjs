@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.34',
+    updatedAt: '2026-06-06',
+    summary: [
+      '将“全部同步”每个 Provider 结果块中的 Synced provider / Display name / Models now present / Added refs / Removed stale refs 改为中文。',
+      '失败结果块同步改为中文文案,保持并发、超时和一次性 config patch 逻辑不变。',
+    ],
+  },
+  {
     version: 'v0.0.33',
     updatedAt: '2026-06-06',
     summary: [
@@ -2471,11 +2479,11 @@ async function syncAllProviders(ask) {
         if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
       }
       const syncedLines = [
-        color(`Synced provider: ${row.id}`, C.white),
-        color(`Display name: ${row.displayName}`, C.white),
-        color(`Models now present: ${item.ids.length}${seconds}`, C.white),
-        color(`Added refs: ${added.length}`, C.white),
-        color(`Removed stale refs: ${removed.length}`, C.white),
+        color(`已同步 Provider: ${row.id}`, C.white),
+        color(`显示名称: ${row.displayName}`, C.white),
+        color(`当前模型数: ${item.ids.length}${seconds}`, C.white),
+        color(`新增引用: ${added.length}`, C.white),
+        color(`移除过期引用: ${removed.length}`, C.white),
       ];
       for (const line of syncedLines) console.log(line);
       detailLines.push(...syncedLines);
@@ -2484,11 +2492,11 @@ async function syncAllProviders(ask) {
     } else {
       failCount++;
       const failLines = [
-        color(`Sync failed provider: ${row.id}`, C.white),
-        color(`Display name: ${row.displayName}`, C.white),
-        color(`Models now present: ${beforeIds.length}${seconds}`, C.white),
-        color('Added refs: 0', C.white),
-        color('Removed stale refs: 0', C.white),
+        color(`同步失败 Provider: ${row.id}`, C.white),
+        color(`显示名称: ${row.displayName}`, C.white),
+        color(`当前模型数: ${beforeIds.length}${seconds}`, C.white),
+        color('新增引用: 0', C.white),
+        color('移除过期引用: 0', C.white),
       ];
       for (const line of failLines) console.log(line);
       if (item.output) console.log(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
