@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.39',
+    updatedAt: '2026-06-06',
+    summary: [
+      '调整“全部同步”过程显示:每个 Provider 的“正在同步”下面立即显示 ✅/⚠ 单行结果和耗时。',
+      '保留最终“同步摘要 + 旧式汇总明细”,同时过程显示不再只有进度行。',
+    ],
+  },
+  {
     version: 'v0.0.38',
     updatedAt: '2026-06-06',
     summary: [
@@ -2515,11 +2523,18 @@ async function syncAllProviders(ask) {
         const [pfx] = ref.split('/');
         if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
       }
+      const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
+      const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white);
+      console.log(resultLine);
       detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个`, C.white));
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
+      const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
+      const reason = String(item.output || '/models 探测失败').split('\n').map((line) => line.trim()).filter(Boolean).slice(-1)[0] || '/models 探测失败';
+      const failLine = color(`⚠ ${formatProviderRow(row)}: ${reason}${seconds}`, C.white);
+      console.log(failLine);
       detailLines.push(color(`⚠ ${formatProviderRow(row)}: /models 探测失败`, C.white));
       detailLines.push(color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white));
     }
