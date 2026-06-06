@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.33',
+    updatedAt: '2026-06-06',
+    summary: [
+      '调整“全部同步”每个 Provider 的结果显示,恢复为 Synced provider / Display name / Models now present / Added refs / Removed stale refs 块状格式。',
+      '保持最多 5 个并发、3 秒超时和最终一次性 config patch 不变,只调整展示方式。',
+    ],
+  },
+  {
     version: 'v0.0.32',
     updatedAt: '2026-06-06',
     summary: [
@@ -2462,19 +2470,29 @@ async function syncAllProviders(ask) {
         const [pfx] = ref.split('/');
         if (pfx.toLowerCase() === row.id.toLowerCase() && !wanted.has(ref)) patchPayload.agents.defaults.models[ref] = null;
       }
-      const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white);
-      console.log(resultLine);
-      detailLines.push(resultLine);
+      const syncedLines = [
+        color(`Synced provider: ${row.id}`, C.white),
+        color(`Display name: ${row.displayName}`, C.white),
+        color(`Models now present: ${item.ids.length}${seconds}`, C.white),
+        color(`Added refs: ${added.length}`, C.white),
+        color(`Removed stale refs: ${removed.length}`, C.white),
+      ];
+      for (const line of syncedLines) console.log(line);
+      detailLines.push(...syncedLines);
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
       failCount++;
-      const failLine = color(`⚠️ ${formatProviderRow(row)}: /models 探测失败${seconds}`, C.white);
-      const keepLine = color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white);
-      console.log(failLine);
-      console.log(keepLine);
-      detailLines.push(failLine);
-      detailLines.push(keepLine);
+      const failLines = [
+        color(`Sync failed provider: ${row.id}`, C.white),
+        color(`Display name: ${row.displayName}`, C.white),
+        color(`Models now present: ${beforeIds.length}${seconds}`, C.white),
+        color('Added refs: 0', C.white),
+        color('Removed stale refs: 0', C.white),
+      ];
+      for (const line of failLines) console.log(line);
+      if (item.output) console.log(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
+      detailLines.push(...failLines);
       if (item.output) detailLines.push(color(String(item.output).split('\n').slice(-3).join('\n'), C.gray));
     }
   }
