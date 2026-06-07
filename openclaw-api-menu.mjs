@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.49',
+    updatedAt: '2026-06-07',
+    summary: [
+      '将“全部同步”从并发改回串行执行,每个服务商检测/同步完成并显示结果后再处理下一个。',
+      '保持最终一次性 config patch 和旧式同步摘要不变,只调整同步执行顺序与显示节奏。',
+    ],
+  },
+  {
     version: 'v0.0.48',
     updatedAt: '2026-06-07',
     summary: [
@@ -2596,24 +2604,7 @@ async function syncAllProviders(ask) {
   const allSyncBackup = createConfigBackup('sync-all-providers');
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
-  const concurrency = Math.min(5, rows.length);
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
-  const syncResults = new Array(rows.length);
-  let nextSyncIndex = 0;
-  const workers = Array.from({ length: concurrency }, async () => {
-    while (nextSyncIndex < rows.length) {
-      const idx = nextSyncIndex++;
-      const row = rows[idx];
-      const startedAt = Date.now();
-      try {
-        const provider = beforeCfg.models?.providers?.[row.id];
-        const ids = await fetchProviderModelIds(provider);
-        syncResults[idx] = { row, status: 0, ids, durationMs: Date.now() - startedAt };
-      } catch (err) {
-        syncResults[idx] = { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
-      }
-    }
-  });
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
   const replacePaths = [];
   let successCount = 0, failCount = 0;
@@ -2621,8 +2612,15 @@ async function syncAllProviders(ask) {
   for (const [idx, row] of rows.entries()) {
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
-    while (!syncResults[idx]) await new Promise((resolve) => setTimeout(resolve, 50));
-    const item = syncResults[idx];
+    const startedAt = Date.now();
+    let item;
+    try {
+      const provider = beforeCfg.models?.providers?.[row.id];
+      const ids = await fetchProviderModelIds(provider);
+      item = { row, status: 0, ids, durationMs: Date.now() - startedAt };
+    } catch (err) {
+      item = { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
+    }
     const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
     const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
@@ -2658,7 +2656,6 @@ async function syncAllProviders(ask) {
       detailLines.push(color(`新增 0 个,删除 0 个,当前 ${beforeIds.length} 个`, C.white));
     }
   }
-  await Promise.all(workers);
   if (successCount > 0) {
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
