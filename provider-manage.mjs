@@ -54,6 +54,13 @@ function ensureJsonFile(file, fallback) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed;
     }
+  } catch {
+    const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    try { fs.copyFileSync(file, corruptPath, fs.constants.COPYFILE_EXCL); } catch {}
+  }
+  try {
+    const invalidPath = `${file}.invalid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    if (fs.existsSync(file)) fs.copyFileSync(file, invalidPath, fs.constants.COPYFILE_EXCL);
   } catch {}
   atomicWriteJsonFile(file, fallback);
   return structuredClone(fallback);
@@ -76,9 +83,13 @@ function runConfigPatch(patch, extraArgs = []) {
 }
 
 function formatBackupTimestamp(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
+  const pad = (n, width = 2) => String(n).padStart(width, '0');
   const year = String(date.getFullYear()).slice(-2);
-  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
+}
+
+function sanitizeBackupTag(tag = 'manual') {
+  return String(tag || 'manual').trim().replace(/[^0-9A-Za-z._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'manual';
 }
 
 function cleanupConfigBackups() {
@@ -107,9 +118,9 @@ function cleanupConfigBackups() {
   }
 }
 
-function createConfigBackup() {
-  const backup = `${CONFIG}-${formatBackupTimestamp()}`;
-  fs.copyFileSync(CONFIG, backup);
+function createConfigBackup(tag = 'manual') {
+  const backup = `${CONFIG}-${formatBackupTimestamp()}-${sanitizeBackupTag(tag)}`;
+  fs.copyFileSync(CONFIG, backup, fs.constants.COPYFILE_EXCL);
   cleanupConfigBackups();
   return backup;
 }
@@ -150,6 +161,14 @@ function refsFor(name) {
 
 function isProviderRef(ref, name) {
   return typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === name.toLowerCase();
+}
+
+function buildDefaultSelectionPatch(defaults = {}) {
+  const patch = {};
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+    if (Object.prototype.hasOwnProperty.call(defaults, field)) patch[field] = defaults[field];
+  }
+  return patch;
 }
 
 function pruneModelSelection(config, name) {
@@ -277,6 +296,7 @@ if (action === 'remove') {
     },
     agents: {
       defaults: {
+        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}),
         models: modelRefPatch,
       },
     },

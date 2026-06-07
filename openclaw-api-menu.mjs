@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.51',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复修改/删除 Provider 时默认模型、图片模型、音频模型、视频/音乐模型和 fallbacks 等选择字段可能残留旧 provider 引用的问题。',
+      '增强配置备份文件名唯一性,彻底卸载前先停止 Gateway,查看 API 列表改为并发检测。',
+    ],
+  },
+  {
     version: 'v0.0.50',
     updatedAt: '2026-06-07',
     summary: [
@@ -652,8 +660,12 @@ function cleanupMenuBackups() {
 }
 
 function formatBackupTimestamp(date = new Date()) {
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  const pad = (n, width = 2) => String(n).padStart(width, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
+}
+
+function sanitizeBackupTag(tag = 'manual') {
+  return String(tag || 'manual').trim().replace(/[^0-9A-Za-z._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'manual';
 }
 
 function cleanupConfigBackups() {
@@ -684,8 +696,8 @@ function cleanupConfigBackups() {
 
 function createConfigBackup(tag = 'manual') {
   const timestamp = formatBackupTimestamp();
-  const backupPath = `${CONFIG}-${timestamp}`;
-  fs.copyFileSync(CONFIG, backupPath);
+  const backupPath = `${CONFIG}-${timestamp}-${sanitizeBackupTag(tag)}`;
+  fs.copyFileSync(CONFIG, backupPath, fs.constants.COPYFILE_EXCL);
   cleanupConfigBackups();
   return backupPath;
 }
@@ -2271,6 +2283,14 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('musicGenerationModel');
 }
 
+function buildDefaultSelectionPatch(defaults = {}) {
+  const patch = {};
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+    if (Object.prototype.hasOwnProperty.call(defaults, field)) patch[field] = defaults[field];
+  }
+  return patch;
+}
+
 function guessInputCaps(id) {
   return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
 }
@@ -2895,7 +2915,7 @@ async function modifyProvider(ask) {
       if (providerIdChanged) {
         modelRefPatch[`${oldProviderId}/*`] = null;
         modelRefPatch[`${newProviderId}/*`] = {};
-        patchPayload.agents = { defaults: { models: modelRefPatch } };
+        patchPayload.agents = { defaults: { ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}), models: modelRefPatch } };
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
       const patchRes = applyConfigPatch(patchPayload);
@@ -2949,12 +2969,11 @@ async function showProvidersDetail(ask) {
     return;
   }
 
-  const detailRows = [];
-  for (const row of rows) {
+  const detailRows = await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
     const provider = cfg.models?.providers?.[row.id];
     const status = await detectProviderStatus(provider);
-    detailRows.push({ row, provider, status });
-  }
+    return { row, provider, status };
+  });
 
   const lines = detailRows.map(({ row, status }, i) => {
     const name = formatProviderRow(row);
@@ -3896,6 +3915,8 @@ async function purgeOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
+  info('正在停止 Gateway 服务...');
+  runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
   info('正在卸载 OpenClaw，请稍等...');
   const uninstallRes = runCommand('npm', ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
   try {
