@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.53',
+    updatedAt: '2026-06-07',
+    summary: [
+      '普通卸载 OpenClaw 时也会先停止并清理 Gateway systemd user service,避免保留配置但残留坏服务。',
+      '彻底卸载和普通卸载共用同一套 service 清理逻辑,缺失 service 的 stop/disable/reset-failed 不再误报整体失败。',
+    ],
+  },
+  {
     version: 'v0.0.52',
     updatedAt: '2026-06-07',
     summary: [
@@ -207,14 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将“全部同步”每个 Provider 结果块中的 Synced provider / Display name / Models now present / Added refs / Removed stale refs 改为中文。',
       '失败结果块同步改为中文文案,保持并发、超时和一次性 config patch 逻辑不变。',
-    ],
-  },
-  {
-    version: 'v0.0.33',
-    updatedAt: '2026-06-06',
-    summary: [
-      '调整“全部同步”每个 Provider 的结果显示,恢复为 Synced provider / Display name / Models now present / Added refs / Removed stale refs 块状格式。',
-      '保持最多 5 个并发、3 秒超时和最终一次性 config patch 不变,只调整展示方式。',
     ],
   },
 ];
@@ -3695,17 +3695,28 @@ async function backupOpenClaw(ask) {
 async function uninstallOpenClaw(ask) {
   section('卸载 OpenClaw');
   warn('将卸载 OpenClaw 程序本体,但保留 ~/.openclaw 配置和数据。');
+  warn('会先停止并清理 Gateway systemd user service,避免卸载后残留坏服务。');
   const confirm = await ask(color('确认卸载 OpenClaw？(y/N): ', C.yellow, C.bold));
   if (confirm.toLowerCase() !== 'y') {
     info('操作已取消。');
     await backPrompt(ask);
     return;
   }
+  info('正在停止并清理 Gateway systemd user service...');
+  runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+  const systemdCleanup = cleanupSystemdUserGatewayService();
+  if (systemdCleanup.skipped) {
+    warn(`systemd service 清理已跳过:${systemdCleanup.reason}`);
+  } else if (systemdCleanup.ok) {
+    success('Gateway systemd user service 已 disable 并删除残留 service 文件。');
+  } else {
+    warn('Gateway systemd user service 清理未完全成功,后续仍会继续卸载。');
+  }
   info('正在卸载 OpenClaw，请稍等...');
   const res = runCommand('npm', ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
   if (res.status === 0) {
     success('OpenClaw 卸载成功。');
-    info('本地配置和数据已保留。');
+    info('本地配置和数据已保留,Gateway systemd user service 残留已尝试清理。');
   } else {
     danger('OpenClaw 卸载失败,请检查 npm 或权限配置。');
   }
