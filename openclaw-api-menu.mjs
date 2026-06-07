@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.54',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复全部同步全部失败仍提示配置已更新的问题,现在会明确提示未写入配置。',
+      '修复 Provider 改名时旧模型引用清理和新引用写入不完整的问题,并优化 ocapi alias、默认模型显示和显示名写入时机。',
+    ],
+  },
+  {
     version: 'v0.0.53',
     updatedAt: '2026-06-07',
     summary: [
@@ -209,14 +217,6 @@ const MENU_VERSION_HISTORY = [
       '失败 Provider 不再展示当前模型数/新增引用/移除过期引用等无意义字段。',
     ],
   },
-  {
-    version: 'v0.0.34',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将“全部同步”每个 Provider 结果块中的 Synced provider / Display name / Models now present / Added refs / Removed stale refs 改为中文。',
-      '失败结果块同步改为中文文案,保持并发、超时和一次性 config patch 逻辑不变。',
-    ],
-  },
 ];
 const MENU_BACKUP_PREFIX = 'openclaw-api-menu.mjs-v';
 const MENU_BACKUP_DIR = path.join(__dirname, 'openclaw-api-menu-backups');
@@ -318,24 +318,34 @@ function runCommand(cmd, args = [], options = {}) {
 function ensureOcapiShortcut(options = {}) {
   const { verbose = false } = options;
   if (process.platform === 'win32') return { changed: false, skipped: true, reason: 'Windows 暂不自动写入 shell alias' };
-  const bashrc = path.join(os.homedir(), '.bashrc');
   const escapeShellSingle = (value) => String(value).replace(/'/g, `'\''`);
   const aliasLine = `alias ocapi='${escapeShellSingle(process.execPath)} ${escapeShellSingle(__filename)}'`;
+  const shellName = path.basename(process.env.SHELL || '').toLowerCase();
+  const candidates = [];
+  if (shellName.includes('zsh')) candidates.push('.zshrc');
+  else if (shellName.includes('bash')) candidates.push('.bashrc');
+  else candidates.push('.zshrc', '.bashrc');
+  for (const fallback of ['.zshrc', '.bashrc']) {
+    if (!candidates.includes(fallback)) candidates.push(fallback);
+  }
   try {
-    const current = fs.existsSync(bashrc) ? fs.readFileSync(bashrc, 'utf8') : '';
+    const targetName = candidates[0];
+    const targetPath = path.join(os.homedir(), targetName);
+    const current = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : '';
     if (/^\s*alias\s+ocapi=/m.test(current) || current.includes(aliasLine)) {
-      return { changed: false, exists: true, path: bashrc };
+      if (verbose) info(`已存在快捷命令: ocapi (${targetPath})`);
+      return { changed: false, exists: true, path: targetPath };
     }
     const prefix = current && !current.endsWith('\n') ? '\n' : '';
-    fs.appendFileSync(bashrc, `${prefix}\n# OpenClaw API menu shortcut\n${aliasLine}\n`);
+    fs.appendFileSync(targetPath, `${prefix}\n# OpenClaw API menu shortcut\n${aliasLine}\n`);
     if (verbose) {
       success('已添加快捷命令: ocapi');
-      info('新开终端后可直接输入 ocapi；当前终端可执行: source ~/.bashrc');
+      info(`新开终端后可直接输入 ocapi；当前终端可执行: source ~/${targetName}`);
     }
-    return { changed: true, path: bashrc, aliasLine };
+    return { changed: true, path: targetPath, aliasLine };
   } catch (err) {
     if (verbose) warn(`添加 ocapi 快捷命令失败:${err.message}`);
-    return { changed: false, error: err.message, path: bashrc };
+    return { changed: false, error: err.message, path: path.join(os.homedir(), candidates[0] || '.bashrc') };
   }
 }
 
@@ -2447,7 +2457,11 @@ async function syncAllProviders(ask) {
   if (failCount > 0) {
     info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');
   }
-  success('配置已更新。');
+  if (successCount > 0) {
+    success('配置已更新。');
+  } else {
+    danger('全部同步失败,未写入任何配置更新。');
+  }
   await backPrompt(ask);
 }
 
@@ -2593,8 +2607,6 @@ async function modifyProvider(ask) {
         continue;
       }
 
-      const backup = createConfigBackup(`modify-${row.id}`);
-
       const oldProviderId = row.id;
       const providerIdChanged = newProviderId && newProviderId !== oldProviderId;
       if (providerIdChanged) {
@@ -2603,16 +2615,15 @@ async function modifyProvider(ask) {
           danger(`新的英文 ID 已存在:${newProviderId}`);
           continue;
         }
+      }
+
+      const backup = createConfigBackup(`modify-${row.id}`);
+      const originalModelRefs = { ...(cfg.agents?.defaults?.models || {}) };
+
+      if (providerIdChanged) {
+        const providers = cfg.models.providers || {};
         providers[newProviderId] = providers[oldProviderId];
         delete providers[oldProviderId];
-        const modelRefs = cfg.agents?.defaults?.models || {};
-        for (const key of Object.keys(modelRefs)) {
-          if (key.startsWith(`${oldProviderId}/`)) {
-            const suffix = key.slice(oldProviderId.length + 1);
-            modelRefs[`${newProviderId}/${suffix}`] = modelRefs[key];
-            delete modelRefs[key];
-          }
-        }
         rewriteProviderRefsInDefaults(cfg, oldProviderId, newProviderId);
         if (displayNames[oldProviderId] !== undefined) {
           displayNames[newProviderId] = displayNames[oldProviderId];
@@ -2627,7 +2638,6 @@ async function modifyProvider(ask) {
       provider.baseUrl = newBaseUrl;
       provider.apiKey = newApiKey;
       displayNames[row.id] = newDisplayName;
-      writeJson(DISPLAY_NAMES, displayNames);
 
       if (Array.isArray(provider.models)) {
         provider.models = provider.models.map((model) => ({
@@ -2638,12 +2648,14 @@ async function modifyProvider(ask) {
 
       const modelRefPatch = {};
       if (providerIdChanged) {
-        for (const [key, value] of Object.entries(cfg.agents?.defaults?.models || {})) {
-          if (key.startsWith(`${oldProviderId}/`) && key !== `${oldProviderId}/*`) {
-            const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
-            if (isEmptyObject) modelRefPatch[key] = null;
-          }
+        for (const [key, value] of Object.entries(originalModelRefs)) {
+          if (!key.startsWith(`${oldProviderId}/`)) continue;
+          const suffix = key.slice(oldProviderId.length + 1);
+          modelRefPatch[key] = null;
+          modelRefPatch[`${newProviderId}/${suffix}`] = value;
         }
+        modelRefPatch[`${oldProviderId}/*`] = null;
+        modelRefPatch[`${newProviderId}/*`] = {};
       }
       const patchPayload = {
         models: { providers: { [row.id]: provider } },
@@ -2652,8 +2664,6 @@ async function modifyProvider(ask) {
         patchPayload.agents = { defaults: { models: modelRefPatch } };
       }
       if (providerIdChanged) {
-        modelRefPatch[`${oldProviderId}/*`] = null;
-        modelRefPatch[`${newProviderId}/*`] = {};
         patchPayload.agents = { defaults: { ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}), models: modelRefPatch } };
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
@@ -2665,6 +2675,7 @@ async function modifyProvider(ask) {
         await backPrompt(ask);
         break;
       }
+      writeJson(DISPLAY_NAMES, displayNames);
       const checked = await detectProviderStatus(provider);
       success(`API 配置修改成功。`);
       info(`修改后检测:${stripAnsi(formatProviderStatusCompact(checked))}`);

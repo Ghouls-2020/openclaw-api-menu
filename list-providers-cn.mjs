@@ -95,10 +95,13 @@ async function detectProviderStatus(provider) {
 const cfg = readJson(CONFIG, {});
 const rawProviders = cfg.models?.providers || {};
 const displayNames = readJson(DISPLAY_NAMES, {});
-const primary = cfg.agents?.defaults?.model?.primary || '<none>';
+const modelConfig = cfg.agents?.defaults?.model;
+const primary = (typeof modelConfig === 'string' ? modelConfig : modelConfig?.primary) || '<none>';
 let primaryDisplay = primary;
 if (primary !== '<none>' && primary.includes('/')) {
-  const [providerId, modelId] = primary.split('/');
+  const firstSlash = primary.indexOf('/');
+  const providerId = primary.slice(0, firstSlash);
+  const modelId = primary.slice(firstSlash + 1);
   const providerName = displayNames[providerId] || providerId;
   primaryDisplay = `${providerName} / ${modelId}`;
 }

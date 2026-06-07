@@ -205,10 +205,6 @@ if (!ids.length) {
   process.exit(3);
 }
 
-const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
-displayNames[providerName] = providerDisplayName;
-writeJson(DISPLAY_NAMES, displayNames);
-
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
 const modelsPatch = { [`${providerName}/*`]: {} };
 
@@ -236,6 +232,10 @@ if (patchRes.status !== 0) {
   if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
   process.exit(patchRes.status || 4);
 }
+
+const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
+displayNames[providerName] = providerDisplayName;
+writeJson(DISPLAY_NAMES, displayNames);
 
 console.log(`Added provider ${providerName}`);
 console.log(`Display name: ${providerDisplayName}`);
