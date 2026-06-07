@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
+const PROVIDER_STATUS_TIMEOUT_MS = 3000;
 
 const C = {
   reset: '\x1b[0m',
@@ -71,7 +72,7 @@ async function detectProviderStatus(provider) {
   const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
   const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const timeoutId = setTimeout(() => controller.abort(), PROVIDER_STATUS_TIMEOUT_MS);
   const start = Date.now();
   try {
     // 改用GET请求,很多API不支持HEAD

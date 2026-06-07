@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.48',
+    updatedAt: '2026-06-07',
+    summary: [
+      '将脚本辅助 JSON 的创建/重置写入改为 tmp + rename 原子写,避免中断时产生半文件。',
+      '会话模型直接写 sessions.json 后新增校验提示;list-providers-cn 的状态检测超时统一为 3 秒。',
+    ],
+  },
+  {
     version: 'v0.0.47',
     updatedAt: '2026-06-07',
     summary: [
@@ -986,6 +994,25 @@ function applySessionModelOverrideInStore(store, sessionKey, ref) {
   return { ok: true };
 }
 
+function verifySessionModelOverrides(storePath, sessionKeys, ref) {
+  const [providerId, modelId] = splitModelRef(ref);
+  const failed = [];
+  const verifyOnce = () => {
+    const latest = readJson(storePath, {});
+    return sessionKeys.filter((key) => {
+      const entry = latest?.[key];
+      return !entry || entry.providerOverride !== providerId || entry.modelOverride !== modelId;
+    });
+  };
+  let mismatched = verifyOnce();
+  if (mismatched.length && typeof SharedArrayBuffer !== 'undefined' && typeof Atomics?.wait === 'function') {
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); } catch {}
+    mismatched = verifyOnce();
+  }
+  for (const key of mismatched) failed.push({ key, reason: '写入后校验失败,可能被 Gateway 运行时会话缓存覆盖。' });
+  return failed;
+}
+
 function syncSessionModelOverrides(sessionKeys, ref) {
   const { storePath, store } = listSyncableTelegramSessions(1000);
   if (!fs.existsSync(storePath)) return { ok: false, synced: 0, reason: `会话文件不存在:${storePath}` };
@@ -1003,12 +1030,14 @@ function syncSessionModelOverrides(sessionKeys, ref) {
     }
   }
   let backup = '';
+  let verifyFailed = [];
   if (synced > 0) {
     backup = `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(storePath, backup);
     writeJson(storePath, store);
+    verifyFailed = verifySessionModelOverrides(storePath, syncedKeys, ref);
   }
-  return { ok: failed.length === 0, synced, syncedKeys, failed, storePath, backup };
+  return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, storePath, backup };
 }
 
 function deleteTelegramSessionRecords(sessionKeys) {
@@ -1194,6 +1223,10 @@ function applySelectedSessionSync(selection, ref) {
     success(buildSessionSyncSuccessMessage(ref, appliedKeys));
   }
   if (result.failed?.length) warn(`有 ${result.failed.length} 个群聊/会话应用失败，可稍后重试。`);
+  if (result.verifyFailed?.length) {
+    warn(`${result.verifyFailed.length} 个会话写入后校验未通过,可能被 Gateway 运行时会话缓存覆盖。`);
+    warn('如果刚切换的模型没有立即生效,请稍后重试或手动重启 Gateway。');
+  }
   return result;
 }
 
@@ -1292,13 +1325,21 @@ function cloneFallback(fallback) {
   return JSON.parse(JSON.stringify(fallback));
 }
 
+function atomicWriteJsonFile(file, data) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+}
+
 function ensureJsonFile(file, fallback, options = {}) {
   const { label = path.basename(file), verbose = false } = options;
   const initial = cloneFallback(fallback);
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     if (!fs.existsSync(file)) {
-      fs.writeFileSync(file, JSON.stringify(initial, null, 2) + '\n');
+      atomicWriteJsonFile(file, initial);
       if (verbose) info(`首次使用:已自动创建 ${label}`);
       return initial;
     }
@@ -1309,7 +1350,7 @@ function ensureJsonFile(file, fallback, options = {}) {
       const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
       try { fs.copyFileSync(file, corruptPath); } catch {}
       if (verbose) warn(`${label} 内容不是合法 JSON,已备份为:${path.basename(corruptPath)},并重置为默认结构。`);
-      fs.writeFileSync(file, JSON.stringify(initial, null, 2) + '\n');
+      atomicWriteJsonFile(file, initial);
       return initial;
     }
     if (Array.isArray(fallback)) {
@@ -1319,7 +1360,7 @@ function ensureJsonFile(file, fallback, options = {}) {
     }
     const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     try { fs.copyFileSync(file, corruptPath); } catch {}
-    fs.writeFileSync(file, JSON.stringify(initial, null, 2) + '\n');
+    atomicWriteJsonFile(file, initial);
     if (verbose) warn(`${label} 结构无效,已备份为:${path.basename(corruptPath)},并重置为默认结构。`);
     return initial;
   } catch (err) {

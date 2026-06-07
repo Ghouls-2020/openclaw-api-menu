@@ -35,10 +35,18 @@ function normalizeAndValidateBaseUrl(value) {
   }
 }
 
+function atomicWriteJsonFile(file, data) {
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+}
+
 function ensureJsonFile(file, fallback) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, JSON.stringify(fallback, null, 2) + '\n');
+    atomicWriteJsonFile(file, fallback);
     return structuredClone(fallback);
   }
   try {
@@ -47,7 +55,7 @@ function ensureJsonFile(file, fallback) {
       return parsed;
     }
   } catch {}
-  fs.writeFileSync(file, JSON.stringify(fallback, null, 2) + '\n');
+  atomicWriteJsonFile(file, fallback);
   return structuredClone(fallback);
 }
 
