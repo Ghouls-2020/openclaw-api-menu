@@ -140,6 +140,14 @@ const providers = cfg.models.providers || {};
 const modelMap = cfg.agents.defaults.models || {};
 const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
 
+function inferProviderDisplayNameForResolve(provider, fallback = '') {
+  if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
+    const inferred = String(provider.models[0].name).split(' / ')[0].trim();
+    if (inferred) return inferred;
+  }
+  return fallback;
+}
+
 function resolveProviderKey(input) {
   if (providers[input]) return input;
   const lowered = String(input).toLowerCase();
@@ -148,6 +156,10 @@ function resolveProviderKey(input) {
   }
   for (const [key, value] of Object.entries(displayNames)) {
     if (String(value).toLowerCase() === lowered && providers[key]) return key;
+  }
+  for (const [key, providerItem] of Object.entries(providers)) {
+    const inferred = inferProviderDisplayNameForResolve(providerItem, key);
+    if (String(inferred).toLowerCase() === lowered) return key;
   }
   return null;
 }
@@ -184,6 +196,59 @@ function buildDefaultSelectionPatch(defaults = {}) {
   return patch;
 }
 
+function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
+  const defaults = config.agents?.defaults;
+  if (!defaults) return { changed: false, messages: [] };
+  const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
+  const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
+  const messages = [];
+  let changed = false;
+
+  const isSameProviderRef = (ref) => typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === providerName.toLowerCase();
+  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
+  const repairString = (fieldName) => {
+    const value = defaults[fieldName];
+    if (!isInvalidSyncedRef(value)) return;
+    if (fallbackRef) {
+      defaults[fieldName] = fallbackRef;
+      messages.push(`${fieldName}: ${value} -> ${fallbackRef}`);
+    } else {
+      delete defaults[fieldName];
+      messages.push(`${fieldName}: 已清理失效引用 ${value}`);
+    }
+    changed = true;
+  };
+  const repairObject = (fieldName) => {
+    const value = defaults[fieldName];
+    if (!value || typeof value !== 'object') return;
+    if (isInvalidSyncedRef(value.primary)) {
+      const old = value.primary;
+      if (fallbackRef) value.primary = fallbackRef;
+      else delete value.primary;
+      messages.push(`${fieldName}.primary: ${old}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      changed = true;
+    }
+    if (Array.isArray(value.fallbacks)) {
+      const before = value.fallbacks.length;
+      value.fallbacks = value.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      if (value.fallbacks.length !== before) {
+        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效引用`);
+        changed = true;
+      }
+    }
+    if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
+      delete defaults[fieldName];
+      changed = true;
+    }
+  };
+
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+    repairString(field);
+    repairObject(field);
+  }
+  return { changed, messages };
+}
+
 function pruneModelSelection(config, name) {
   const defaults = config.agents?.defaults;
   if (!defaults) return;
@@ -218,7 +283,7 @@ function guessInputCaps(id) {
 }
 
 function getProviderDisplayName(name) {
-  return displayNames[name] || name;
+  return displayNames[name] || inferProviderDisplayName(providers[name], name);
 }
 
 function inferProviderDisplayName(provider, fallback = '') {
@@ -421,6 +486,7 @@ if (action === 'sync') {
     maxTokens: 128000,
   }));
   const wanted = new Set(ids.map(id => `${providerName}/${id}`));
+  const repairedDefaults = repairModelSelectionForSyncedProvider(cfg, providerName, ids);
   let added = 0, removed = 0;
   const modelRefPatch = { [`${providerName}/*`]: {} };
   for (const ref of wanted) {
@@ -443,6 +509,7 @@ if (action === 'sync') {
     },
     agents: {
       defaults: {
+        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}),
         models: modelRefPatch,
       },
     },
@@ -458,5 +525,9 @@ if (action === 'sync') {
   console.log(`Models now present: ${ids.length}`);
   console.log(`Added refs: ${added}`);
   console.log(`Removed stale refs: ${removed}`);
+  if (repairedDefaults.changed) {
+    console.log('Repaired default model refs:');
+    for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
+  }
   if (backup) console.log(`Backup: ${backup}`);
 }

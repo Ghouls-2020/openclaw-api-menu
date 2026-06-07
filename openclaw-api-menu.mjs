@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.60',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复 provider-manage 单独同步时显示名回退逻辑,支持从 provider.models[0].name 推断中文显示名并按推断名解析。',
+      '同步模型后自动修复指向已移除模型的默认选择引用;修正 Gateway 检查提示菜单编号为 [19]。',
+    ],
+  },
+  {
     version: 'v0.0.59',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将模型测活 prompt 改为“给我解释一下 HTTP 和 HTTPS 的区别，用3点说明”。',
       '继续避免 hi/ping/模型检测 等明显探活内容,让测活请求更像正常用户问题。',
-    ],
-  },
-  {
-    version: 'v0.0.40',
-    updatedAt: '2026-06-06',
-    summary: [
-      '调整模型测活 prompt,不再使用 hi/ping 或包含“模型检测”的明显探活内容。',
-      '测活请求改为自然短问题,降低被服务商识别为健康检查的概率。',
     ],
   },
 ];
@@ -3712,7 +3712,7 @@ async function installSpecificOpenClawVersion(ask) {
     lines.push(color('Gateway 启动/重启命令已执行完成。', C.green, C.bold));
     if (shouldUseRecovery) {
       lines.push(color('已使用降级恢复模式允许旧版本 binary 接管更高版本写入过的配置。', C.white));
-      lines.push(color('如果仍提示旧版本保护,请执行 [15] 查看日志;重点检查 service 是否已指向目标版本。', C.white));
+      lines.push(color('如果仍提示旧版本保护,请执行 [19] 一键检查 Gateway 故障原因;重点检查 service 是否已指向目标版本。', C.white));
     }
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
@@ -3857,7 +3857,7 @@ async function quickHealthcheck(ask) {
   }
   if (!state.ok) lines.push(color('建议先运行一次 OpenClaw,确保 ~/.openclaw/openclaw.json 已生成。', C.yellow));
   if (missingScripts.length) lines.push(color(`建议执行 [21] 检查 / 修复脚本依赖(当前缺少:${missingScripts.join('、')})。`, C.yellow));
-  if (!gateway.ok) lines.push(color('建议执行 [15] 一键检查 Gateway 故障原因。', C.yellow));
+  if (!gateway.ok) lines.push(color('建议执行 [19] 一键检查 Gateway 故障原因。', C.yellow));
   await finishScreen(ask, lines);
 }
 
