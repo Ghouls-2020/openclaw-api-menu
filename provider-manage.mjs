@@ -235,7 +235,6 @@ if (action === 'rename') {
   }
   const backup = maybeCreateConfigBackup();
   displayNames[providerName] = providerDisplayName;
-  writeJson(DISPLAY_NAMES, displayNames);
   if (Array.isArray(provider.models)) {
     provider.models = provider.models.map((model) => ({
       ...model,
@@ -255,6 +254,7 @@ if (action === 'rename') {
     if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
     process.exit(patchRes.status || 4);
   }
+  writeJson(DISPLAY_NAMES, displayNames);
   console.log(`Renamed provider display: ${providerName} -> ${providerDisplayName}`);
   if (backup) console.log(`Backup: ${backup}`);
   process.exit(0);
@@ -277,7 +277,6 @@ if (action === 'remove') {
   const backup = maybeCreateConfigBackup();
   delete cfg.models.providers[providerName];
   delete displayNames[providerName];
-  writeJson(DISPLAY_NAMES, displayNames);
   let removed = 0;
   const modelRefPatch = { [`${providerName}/*`]: null };
   for (const key of Object.keys(modelMap)) {
@@ -307,6 +306,7 @@ if (action === 'remove') {
     if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
     process.exit(patchRes.status || 4);
   }
+  writeJson(DISPLAY_NAMES, displayNames);
   console.log(`Removed provider: ${providerName}`);
   console.log(`Removed refs: ${removed}`);
   if (backup) console.log(`Backup: ${backup}`);

@@ -58,6 +58,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.55',
+    updatedAt: '2026-06-07',
+    summary: [
+      '新增 API 时校验 provider id,避免斜杠、点号等非法 id 污染模型引用。',
+      '新增 API 改为通过 stdin 向辅助脚本传递参数,避免 API Key 出现在进程参数;全部同步改为写入前才创建备份。',
+      'provider-manage rename/remove 改为主配置 patch 成功后再写显示名文件。',
+    ],
+  },
+  {
     version: 'v0.0.54',
     updatedAt: '2026-06-07',
     summary: [
@@ -207,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '移除“全部同步”结束后的重复“同步明细”汇总输出。',
       '全部同步结果只在每个 Provider 完成时逐个展示,避免最后再次打印同一批结果。',
-    ],
-  },
-  {
-    version: 'v0.0.35',
-    updatedAt: '2026-06-06',
-    summary: [
-      '调整“全部同步”失败结果块,同步失败时直接显示失败原因。',
-      '失败 Provider 不再展示当前模型数/新增引用/移除过期引用等无意义字段。',
     ],
   },
 ];
@@ -1919,10 +1920,13 @@ function runNode(script, args = [], options = {}) {
     info('当前版本会尽量使用主脚本内建能力;如果你刚整理过文件,请确认 scripts 目录完整。');
     return 127;
   }
-  let res = spawnSync(process.execPath, [script, ...args], { stdio: 'inherit' });
+  const spawnOptions = options.input === undefined
+    ? { stdio: 'inherit' }
+    : { input: options.input, encoding: 'utf8', stdio: ['pipe', 'inherit', 'inherit'] };
+  let res = spawnSync(process.execPath, [script, ...args], spawnOptions);
   if (retry && res.status !== 0) {
     info('首次同步失败,正在重试...');
-    res = spawnSync(process.execPath, [script, ...args], { stdio: 'inherit' });
+    res = spawnSync(process.execPath, [script, ...args], spawnOptions);
   }
   return typeof res.status === 'number' ? res.status : 1;
 }
@@ -2295,6 +2299,7 @@ async function addProvider(ask) {
   }
   const providerName = await ask(color('输入 provider id（英文，唯一）：', C.bold));
   if (!providerName) return info('操作已取消。');
+  if (!isValidProviderId(providerName)) return warn('provider id 格式无效,只能包含字母、数字、下划线(_)和短横线(-)。');
   const displayName = await ask(color('输入显示名称（中文可填，直接回车则同 provider id）：', C.bold)) || providerName;
   const baseUrlInput = await ask(color('输入 Base URL（例如 https://api.example.com/v1）：', C.bold));
   if (!baseUrlInput) return warn('Base URL 不能为空。');
@@ -2309,7 +2314,8 @@ async function addProvider(ask) {
     await backPrompt(ask);
     return;
   }
-  const result = { code: runNode(helperPath, [providerName, displayName, baseUrl, apiKey], { retry: true, label: 'add-provider.mjs' }) };
+  const addPayload = JSON.stringify({ providerName, providerDisplayName: displayName, baseUrl, apiKey });
+  const result = { code: runNode(helperPath, ['--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
   const freshCfg = loadWorkspaceState().cfg;
   const exists = !!freshCfg.models?.providers?.[providerName];
   if (exists && result.code === 0) {
@@ -2378,7 +2384,6 @@ async function syncAllProviders(ask) {
     return;
   }
   const beforeCfg = readJson(CONFIG, {});
-  const allSyncBackup = createConfigBackup('sync-all-providers');
   const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
@@ -2434,6 +2439,7 @@ async function syncAllProviders(ask) {
     }
   }
   if (successCount > 0) {
+    const allSyncBackup = createConfigBackup('sync-all-providers');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
       danger('批量写入配置失败。');

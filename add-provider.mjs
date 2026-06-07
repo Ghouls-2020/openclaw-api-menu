@@ -13,14 +13,32 @@ const CONFIG_BACKUP_KEEP_MAX = 20;
 
 const args = process.argv.slice(2);
 let providerName, providerDisplayName, baseUrlRaw, apiKey;
-if (args.length >= 4) {
+if (args[0] === '--stdin') {
+  try {
+    const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
+    providerName = payload.providerName;
+    providerDisplayName = payload.providerDisplayName || payload.providerName;
+    baseUrlRaw = payload.baseUrl;
+    apiKey = payload.apiKey;
+  } catch (err) {
+    console.error(`Failed to read stdin payload: ${err.message}`);
+    process.exit(1);
+  }
+} else if (args.length >= 4) {
   [providerName, providerDisplayName, baseUrlRaw, apiKey] = args;
 } else {
   [providerName, baseUrlRaw, apiKey] = args;
   providerDisplayName = providerName;
 }
 if (!providerName || !baseUrlRaw || !apiKey) {
-  console.error('Usage: node add-provider.mjs <providerName> [providerDisplayName] <baseUrl> <apiKey>');
+  console.error('Usage: node add-provider.mjs --stdin OR <providerName> [providerDisplayName] <baseUrl> <apiKey>');
+  process.exit(1);
+}
+function isValidProviderId(value) {
+  return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
+}
+if (!isValidProviderId(providerName)) {
+  console.error('provider id 格式无效,只能包含字母、数字、下划线(_)和短横线(-)。');
   process.exit(1);
 }
 
