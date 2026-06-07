@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.52',
+    updatedAt: '2026-06-07',
+    summary: [
+      '彻底卸载时同步处理 systemd user service:停止、disable、删除 openclaw-gateway.service、daemon-reload 并 reset-failed。',
+      '降级恢复不再使用 systemctl --user set-environment,改为临时 service drop-in 注入环境变量并在重启后清理。',
+    ],
+  },
+  {
     version: 'v0.0.51',
     updatedAt: '2026-06-07',
     summary: [
@@ -207,275 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '调整“全部同步”每个 Provider 的结果显示,恢复为 Synced provider / Display name / Models now present / Added refs / Removed stale refs 块状格式。',
       '保持最多 5 个并发、3 秒超时和最终一次性 config patch 不变,只调整展示方式。',
-    ],
-  },
-  {
-    version: 'v0.0.32',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将 Provider 检测/同步超时从 5 秒调整为 3 秒,减少慢接口等待。',
-      '全部同步并发从全并发调整为最多 5 个,API 状态检测并发也从 3 个调整为 5 个。',
-    ],
-  },
-  {
-    version: 'v0.0.31',
-    updatedAt: '2026-06-06',
-    summary: [
-      '调整“全部同步”的显示节奏:保持并发拉取模型列表,但按 Provider 顺序逐个等待并显示结果。',
-      '避免全部同步完成后一次性刷出所有 Provider 结果,显示更接近逐个检测的旧体验。',
-    ],
-  },
-  {
-    version: 'v0.0.30',
-    updatedAt: '2026-06-06',
-    summary: [
-      '取消换模型检测超时时的额外风险提示文案,避免误导用户把临时检测结果当成切换结论。',
-      '检测失败后仍保留“再测一次 / 仍然切换 / 取消”的交互。',
-    ],
-  },
-  {
-    version: 'v0.0.29',
-    updatedAt: '2026-06-06',
-    summary: [
-      '取消同步新增模型后的“是否现在重启 Gateway”交互,脚本不再在同步流程里触发 Gateway 重启。',
-      '同步流程恢复为只写配置和展示同步结果,新增模型是否重启由用户自行决定。',
-    ],
-  },
-  {
-    version: 'v0.0.28',
-    updatedAt: '2026-06-06',
-    summary: [
-      '取消会话模型切换时调用 Gateway sessions.patch,恢复为直接写入 sessions.json。',
-      '保留新增模型后提示重启 Gateway 的逻辑,避免把新增模型运行时缓存问题误归因到 sessions.patch。',
-    ],
-  },
-  {
-    version: 'v0.0.27',
-    updatedAt: '2026-06-06',
-    summary: [
-      '撤掉“sessions.patch 实时生效”的额外成功提示,避免误导为新增模型无需重启即可稳定使用。',
-      '会话模型切换仍优先使用 sessions.patch,但新增模型是否立即可用以运行时模型目录刷新为准。',
-    ],
-  },
-  {
-    version: 'v0.0.26',
-    updatedAt: '2026-06-06',
-    summary: [
-      '同步模型发现新增模型时,明确提示 2026.5.28 运行时模型目录可能需要重启 Gateway 才会立即可用。',
-      '单个同步和全部同步新增模型后均提供可选的立即重启 Gateway,避免新模型切换后被旧运行时缓存误判。',
-    ],
-  },
-  {
-    version: 'v0.0.25',
-    updatedAt: '2026-06-06',
-    summary: [
-      '切换 Telegram 会话模型时优先走 Gateway sessions.patch,让运行中的 Gateway 立即应用 session override。',
-      '当 sessions.patch 因权限/scope 等原因失败时,回退写 sessions.json 并提示可能需要重启 Gateway 才会即时生效。',
-    ],
-  },
-  {
-    version: 'v0.0.24',
-    updatedAt: '2026-06-06',
-    summary: [
-      '恢复换模型检测失败后的“仍然切换”选项,避免检测误判时无法手动强制切换。',
-      '对超时、余额不足、认证失败、模型不存在等情况保留明确风险提示,但最终是否强制切换交给用户决定。',
-    ],
-  },
-  {
-    version: 'v0.0.23',
-    updatedAt: '2026-06-06',
-    summary: [
-      '换模型检测遇到余额不足、额度不足、认证失败或模型不存在时,不再允许强制切换。',
-      'API billing error 会明确提示充值/换 key/换模型,避免用户误以为切换成功后又变成其他模型。',
-    ],
-  },
-  {
-    version: 'v0.0.22',
-    updatedAt: '2026-06-06',
-    summary: [
-      '换模型时如果模型检测超时,不再提供“仍然切换”选项,避免把不可用模型写入后会话表现成回退/变成其他模型。',
-      '超时场景只允许重新检测或取消,其他非超时失败仍保留强制切换入口。',
-    ],
-  },
-  {
-    version: 'v0.0.21',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将“全部同步”的 Provider /models 拉取改为默认全并发,不同服务商可同时检测以进一步缩短耗时。',
-      '仍保留按 Provider 顺序展示结果和一次性 config patch,避免多次触发 Gateway reload。',
-    ],
-  },
-  {
-    version: 'v0.0.20',
-    updatedAt: '2026-06-06',
-    summary: [
-      '真正恢复“全部同步”的旧式显示:按 Provider 顺序逐段展示“正在同步 XXX...”和结果。',
-      '并发执行期间不再提前刷出队列行,显示体验接近旧版,底层仍保留并发和一次性 config patch。',
-    ],
-  },
-  {
-    version: 'v0.0.19',
-    updatedAt: '2026-06-06',
-    summary: [
-      '恢复“全部同步”的旧式进度显示文案,重新显示“正在同步 XXX...”。',
-      '仅调整显示方式,底层仍保留并发拉取模型列表和一次性 config patch。',
-    ],
-  },
-  {
-    version: 'v0.0.18',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将 Provider /models 同步超时从 15 秒降为 5 秒,避免慢接口拖累“全部同步”。',
-      '全部同步和 provider-manage 的模型拉取统一使用 5 秒超时。',
-    ],
-  },
-  {
-    version: 'v0.0.17',
-    updatedAt: '2026-06-06',
-    summary: [
-      '继续优化“全部同步”:并发拉取所有 Provider 的 /models 后汇总为一次 config patch,避免每个 Provider 写一次配置。',
-      '全部同步现在只触发一次 Gateway 配置 reload,减少 hybrid reload 连续触发导致的卡顿。',
-    ],
-  },
-  {
-    version: 'v0.0.16',
-    updatedAt: '2026-06-06',
-    summary: [
-      '优化“全部同步”速度:同步全部 Provider 从串行改为最多 3 个并发执行,减少慢接口拖累总耗时。',
-      '并发同步时收集子脚本输出后按 Provider 顺序展示,避免多进程日志互相穿插。',
-    ],
-  },
-  {
-    version: 'v0.0.15',
-    updatedAt: '2026-06-06',
-    summary: [
-      '模型同步改为与服务商 /models 返回结果保持一致,同步时显式替换对应 provider 的 models 数组。',
-      '服务商已下架的模型会从本地 provider.models 中移除,不再因 OpenClaw 默认防误删保护导致探测失败。',
-    ],
-  },
-  {
-    version: 'v0.0.14',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将脚本内 JSON 写入统一改为 tmp + rename 的原子写入,降低中断/OOM/磁盘异常导致半文件的风险。',
-      '配置备份新增保留上限清理,默认只保留最近 20 个 openclaw.json-* 备份,避免长期测试堆积。',
-    ],
-  },
-  {
-    version: 'v0.0.13',
-    updatedAt: '2026-06-06',
-    summary: [
-      '继续收敛配置并发写入风险:默认模型切换只 patch agents.defaults.model.primary,不再写回旧的整块 model 对象。',
-      'Provider 修改/删除/同步改为按单个模型引用增删 patch,避免把读到的旧 agents.defaults.models 整块覆盖回配置。',
-    ],
-  },
-  {
-    version: 'v0.0.12',
-    updatedAt: '2026-06-06',
-    summary: [
-      '修复一键检查 Gateway 故障原因时被旧重启日志误导的问题,现在优先按当前 status 判断运行状态。',
-      '主菜单第 14 项文案从“回退指定 OpenClaw 版本”改为“降级 OpenClaw”。',
-    ],
-  },
-  {
-    version: 'v0.0.11',
-    updatedAt: '2026-06-06',
-    summary: [
-      '继续修复降级恢复流程:重启 systemd Gateway 前临时注入 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 到 user manager 环境。',
-      '降级时同步把配置 meta.lastTouchedVersion 下调为目标版本,避免恢复成功后下次普通重启再次被版本保护拦截。',
-    ],
-  },
-  {
-    version: 'v0.0.10',
-    updatedAt: '2026-06-06',
-    summary: [
-      '修复回退指定 OpenClaw 版本后 Gateway service 仍可能被新配置版本保护拦截的问题。',
-      '降级流程改为安装旧版本后先用恢复模式执行 gateway install --force,再用恢复模式 restart,确保 systemd service 由目标旧版本接管。',
-    ],
-  },
-  {
-    version: 'v0.0.9',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复脚本降级 OpenClaw 时对配置写入版本的判断不可靠,导致普通 gateway start 被官方版本保护拦住的问题。',
-      '降级流程改为只要目标版本低于当前版本,就固定使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 以恢复模式启动 Gateway。',
-    ],
-  },
-  {
-    version: 'v0.0.8',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复脚本回退指定 OpenClaw 版本时的版本保护冲突。',
-      '降级流程改为先停止 Gateway,安装目标版本后按需使用 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 重新启动 Gateway。',
-    ],
-  },
-  {
-    version: 'v0.0.7',
-    updatedAt: '2026-06-05',
-    summary: [
-      '关键配置写入改为通过 openclaw config patch --stdin 提交,减少读旧配置整份覆盖新配置的风险。',
-      '新增/同步/删除 Provider 和切换默认模型不再直接整份覆盖 openclaw.json。',
-    ],
-  },
-  {
-    version: 'v0.0.6',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复主菜单 20. 版本 项显示但输入 20 被判定为无效选择的问题。',
-      '为主菜单选择处理补上 showScriptVersionDetail 分支,输入 20 可正常查看版本记录。',
-    ],
-  },
-  {
-    version: 'v0.0.5',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复技能目录写死 /root 路径的问题,改为基于当前用户 home 目录解析。',
-      '修改 Provider 英文 ID 时增加合法性校验,只允许字母、数字、下划线和短横线。',
-    ],
-  },
-  {
-    version: 'v0.0.4',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复 ocapi 快捷 alias 未正确转义 node 路径和脚本路径的问题,路径包含空格或单引号时也能正常运行。',
-      '删除未使用的 fetchProviderModelIds 死代码,避免保留无超时 fetch 逻辑。',
-      '删除未使用的 getProviderQuota 死代码,移除 AbortSignal.timeout 带来的旧 Node 兼容性隐患。',
-    ],
-  },
-  {
-    version: 'v0.0.3',
-    updatedAt: '2026-06-05',
-    summary: [
-      '修复 JSON 解析失败时静默覆盖本地文件的风险,损坏文件会先备份为 corrupt 文件再重置,OpenClaw 主配置损坏时会停止继续运行。',
-      'Telegram Bot API getMe 改为当前进程内异步 fetch + AbortController,不再启动同步子进程阻塞 UI。',
-      '为 mapWithConcurrency 增加 worker 异常兜底,单个任务失败不会炸毁整个并发队列。',
-      '添加 Base URL 输入校验,要求使用 http:// 或 https:// 开头的完整 URL。',
-    ],
-  },
-  {
-    version: 'v0.0.2',
-    updatedAt: '2026-06-04',
-    summary: [
-      '为 add-provider.mjs 和 provider-manage.mjs 的模型列表请求增加 AbortController 超时控制,避免无响应 API 导致脚本永久卡住。',
-      '修复 Telegram Bot API getMe 通过命令行参数传递 botToken 的安全隐患,改为通过子进程 stdin 传递敏感 Token。',
-    ],
-  },
-  {
-    version: 'v0.0.1',
-    updatedAt: '2026-06-04',
-    summary: [
-      '优化 list-providers-cn.mjs 的 API 状态检测,从串行检测改为有限并发检测。',
-      '新增 mapWithConcurrency 并发控制,默认同时检测 3 个 Provider,减少多个离线 API 导致的长时间等待。',
-    ],
-  },
-  {
-    version: 'v0.0.0',
-    updatedAt: '2026-06-04',
-    summary: [
-      '重置为 v0.0.0 初始版本。',
-      '清理 Telegram ID 和机器人昵称硬编码,脚本中不包含私人 ID 或昵称。',
-      '私聊显示名使用 A+B 兜底:优先通过 Telegram Bot API getMe 自动读取机器人名称,失败时读取本机 openclaw-api-menu.local.json 配置。',
-      '群聊继续优先显示会话记录中的群名,无名称时显示通用占位符。',
     ],
   },
 ];
@@ -3710,13 +3449,75 @@ function setDowngradeConfigTouchedVersion(targetVersion) {
   }
 }
 
-function setSystemdUserDowngradeEnv(enabled) {
+function getSystemdUserGatewayServicePaths() {
+  const userSystemdDir = path.join(os.homedir(), '.config', 'systemd', 'user');
+  const serviceName = 'openclaw-gateway.service';
+  const servicePath = path.join(userSystemdDir, serviceName);
+  const dropInDir = path.join(userSystemdDir, `${serviceName}.d`);
+  const downgradeDropInPath = path.join(dropInDir, '99-openclaw-api-menu-downgrade-recovery.conf');
+  return { userSystemdDir, serviceName, servicePath, dropInDir, downgradeDropInPath };
+}
+
+function runSystemdUser(args, options = {}) {
   if (process.platform === 'win32') return { ok: false, skipped: true, reason: 'Windows 无 systemd user manager' };
-  const args = enabled
-    ? ['--user', 'set-environment', 'OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1']
-    : ['--user', 'unset-environment', 'OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS'];
-  const res = runCommand('systemctl', args, { timeout: 8000 });
+  const res = runCommand('systemctl', ['--user', ...args], { timeout: 8000, ...options });
   return { ok: res.status === 0, status: res.status, output: `${res.stdout || ''}${res.stderr || ''}`.trim() };
+}
+
+function setSystemdUserDowngradeServiceEnv(enabled) {
+  if (process.platform === 'win32') return { ok: false, skipped: true, reason: 'Windows 无 systemd user manager' };
+  const { dropInDir, downgradeDropInPath } = getSystemdUserGatewayServicePaths();
+  try {
+    if (enabled) {
+      fs.mkdirSync(dropInDir, { recursive: true });
+      fs.writeFileSync(
+        downgradeDropInPath,
+        `[Service]\nEnvironment=OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1\n`,
+        'utf8',
+      );
+    } else {
+      fs.rmSync(downgradeDropInPath, { force: true });
+      try {
+        fs.rmdirSync(dropInDir);
+      } catch {
+        // 目录里可能还有用户自己的 drop-in,保留即可。
+      }
+    }
+  } catch (err) {
+    return { ok: false, status: null, output: err.message };
+  }
+  const reloadRes = runSystemdUser(['daemon-reload']);
+  return { ...reloadRes, path: downgradeDropInPath };
+}
+
+function cleanupSystemdUserGatewayService() {
+  const result = { ok: true, steps: [] };
+  const isMissingUnitOutput = (output) => /not loaded|not-found|could not be found|does not exist|No such file/i.test(String(output || ''));
+  const pushStep = (name, res, options = {}) => {
+    const tolerated = Boolean(options.tolerateMissing && !res.ok && isMissingUnitOutput(res.output));
+    result.steps.push({ name, ...res, tolerated });
+    if (!res.ok && !res.skipped && !tolerated) result.ok = false;
+  };
+  if (process.platform === 'win32') {
+    result.ok = false;
+    result.skipped = true;
+    result.reason = 'Windows 无 systemd user manager';
+    return result;
+  }
+  const { serviceName, servicePath, dropInDir } = getSystemdUserGatewayServicePaths();
+  pushStep('stop', runSystemdUser(['stop', serviceName]), { tolerateMissing: true });
+  pushStep('disable', runSystemdUser(['disable', serviceName]), { tolerateMissing: true });
+  try {
+    fs.rmSync(servicePath, { force: true });
+    fs.rmSync(dropInDir, { recursive: true, force: true });
+    result.steps.push({ name: 'remove-service-file', ok: true, path: servicePath });
+  } catch (err) {
+    result.ok = false;
+    result.steps.push({ name: 'remove-service-file', ok: false, output: err.message, path: servicePath });
+  }
+  pushStep('daemon-reload', runSystemdUser(['daemon-reload']));
+  pushStep('reset-failed', runSystemdUser(['reset-failed', serviceName]), { tolerateMissing: true });
+  return result;
 }
 
 async function installSpecificOpenClawVersion(ask) {
@@ -3838,16 +3639,21 @@ async function installSpecificOpenClawVersion(ask) {
     } else {
       lines.push(color(`配置写入版本下调失败:${touchRes.reason}`, C.yellow, C.bold));
     }
-    const envRes = setSystemdUserDowngradeEnv(true);
+    const envRes = setSystemdUserDowngradeServiceEnv(true);
     if (envRes.ok) {
-      lines.push(color('已为本次 systemd Gateway 启动临时注入降级恢复环境变量。', C.green, C.bold));
+      lines.push(color('已为 Gateway service 临时 drop-in 注入降级恢复环境变量。', C.green, C.bold));
     } else {
-      lines.push(color('systemd 临时环境变量注入失败;仍会继续尝试恢复模式重启。', C.yellow, C.bold));
+      lines.push(color('systemd service 临时环境变量注入失败;仍会继续尝试恢复模式重启。', C.yellow, C.bold));
     }
     try {
       restartRes = runDestructiveOpenClaw(['gateway', 'restart'], { stdio: 'inherit' });
     } finally {
-      setSystemdUserDowngradeEnv(false);
+      const cleanupEnvRes = setSystemdUserDowngradeServiceEnv(false);
+      if (cleanupEnvRes.ok) {
+        lines.push(color('已清理 Gateway service 临时降级恢复 drop-in。', C.green, C.bold));
+      } else {
+        lines.push(color('Gateway service 临时降级恢复 drop-in 清理失败,请检查 ~/.config/systemd/user/openclaw-gateway.service.d。', C.yellow, C.bold));
+      }
     }
   } else {
     info('正在启动/重启 Gateway 并验证状态...');
@@ -3862,9 +3668,10 @@ async function installSpecificOpenClawVersion(ask) {
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
     if (shouldUseRecovery) {
-      lines.push(color('如需手动执行,可先运行 systemctl --user set-environment OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1', C.white));
-      lines.push(color('然后执行 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway install --force && OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway restart', C.white));
-      lines.push(color('恢复后可运行 systemctl --user unset-environment OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS', C.white));
+      lines.push(color('如需手动执行,可在 ~/.config/systemd/user/openclaw-gateway.service.d/ 下临时添加 drop-in:', C.white));
+      lines.push(color('[Service] Environment=OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1', C.white));
+      lines.push(color('然后 systemctl --user daemon-reload,再执行 OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway install --force && OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS=1 openclaw gateway restart', C.white));
+      lines.push(color('恢复后删除该 drop-in 并再次 systemctl --user daemon-reload。', C.white));
     }
   }
   await finishScreen(ask, lines);
@@ -3915,8 +3722,16 @@ async function purgeOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
-  info('正在停止 Gateway 服务...');
+  info('正在停止并清理 Gateway systemd user service...');
   runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+  const systemdCleanup = cleanupSystemdUserGatewayService();
+  if (systemdCleanup.skipped) {
+    warn(`systemd service 清理已跳过:${systemdCleanup.reason}`);
+  } else if (systemdCleanup.ok) {
+    success('Gateway systemd user service 已 disable 并删除残留 service 文件。');
+  } else {
+    warn('Gateway systemd user service 清理未完全成功,后续仍会继续卸载。');
+  }
   info('正在卸载 OpenClaw，请稍等...');
   const uninstallRes = runCommand('npm', ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
   try {
@@ -3928,9 +3743,9 @@ async function purgeOpenClaw(ask) {
   }
   if (uninstallRes.status === 0) {
     success('OpenClaw 已彻底卸载。');
-    info('程序、本地配置和数据均已删除。');
+    info('程序、本地配置、数据和 Gateway systemd user service 残留均已处理。');
   } else {
-    warn('程序卸载可能未完成,但 ~/.openclaw 已删除。');
+    warn('程序卸载可能未完成,但 ~/.openclaw 已删除,systemd service 残留也已尝试清理。');
   }
   await backPrompt(ask);
 }
