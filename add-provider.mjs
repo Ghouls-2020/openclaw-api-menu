@@ -116,11 +116,7 @@ function runConfigPatch(patch) {
 function formatBackupTimestamp(date = new Date()) {
   const pad = (n, width = 2) => String(n).padStart(width, '0');
   const year = String(date.getFullYear()).slice(-2);
-  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
-}
-
-function sanitizeBackupTag(tag = 'manual') {
-  return String(tag || 'manual').trim().replace(/[^0-9A-Za-z._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'manual';
+  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
 function cleanupConfigBackups() {
@@ -150,7 +146,7 @@ function cleanupConfigBackups() {
 }
 
 function createConfigBackup(tag = 'manual') {
-  const backup = `${CONFIG}-${formatBackupTimestamp()}-${sanitizeBackupTag(tag)}`;
+  const backup = `${CONFIG}-${formatBackupTimestamp()}`;
   fs.copyFileSync(CONFIG, backup, fs.constants.COPYFILE_EXCL);
   cleanupConfigBackups();
   return backup;

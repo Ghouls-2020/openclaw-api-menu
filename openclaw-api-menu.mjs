@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.62',
+    updatedAt: '2026-06-07',
+    summary: [
+      '调整 openclaw.json 备份文件名格式,去掉毫秒和 manual/操作标签后缀。',
+      '备份现在统一生成 openclaw.json-YYMMDD-HHMMSS 形式,辅助脚本同步保持一致。',
+    ],
+  },
+  {
     version: 'v0.0.61',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '新增智能重启:同步模型后检测到模型列表有新增或删除时,自动重启 Gateway 刷新运行时模型目录。',
       '全部同步和单个 Provider 同步均支持智能重启;无模型变化时不会重启。',
-    ],
-  },
-  {
-    version: 'v0.0.42',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将模型测活超时从 3 秒调整为 5 秒,配合更自然的 HTTP/HTTPS 问题减少误判超时。',
-      '/models 同步超时仍保持 3 秒,只放宽切换模型前的真实调用测活。',
     ],
   },
 ];
@@ -410,11 +410,8 @@ function cleanupMenuBackups() {
 
 function formatBackupTimestamp(date = new Date()) {
   const pad = (n, width = 2) => String(n).padStart(width, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}-${pad(date.getMilliseconds(), 3)}`;
-}
-
-function sanitizeBackupTag(tag = 'manual') {
-  return String(tag || 'manual').trim().replace(/[^0-9A-Za-z._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'manual';
+  const year = String(date.getFullYear()).slice(-2);
+  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
 }
 
 function cleanupConfigBackups() {
@@ -444,8 +441,7 @@ function cleanupConfigBackups() {
 }
 
 function createConfigBackup(tag = 'manual') {
-  const timestamp = formatBackupTimestamp();
-  const backupPath = `${CONFIG}-${timestamp}-${sanitizeBackupTag(tag)}`;
+  const backupPath = `${CONFIG}-${formatBackupTimestamp()}`;
   fs.copyFileSync(CONFIG, backupPath, fs.constants.COPYFILE_EXCL);
   cleanupConfigBackups();
   return backupPath;
