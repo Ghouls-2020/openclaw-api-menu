@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.59',
+    updatedAt: '2026-06-07',
+    summary: [
+      '主菜单新增 API 和修改显示名称时增加显示名重复检查,避免后续按显示名解析错 Provider。',
+      '显示名冲突检测同时读取 provider-display-names.json 和 provider.models[0].name 推断值;辅助脚本同步增强。',
+    ],
+  },
+  {
     version: 'v0.0.58',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '调整模型测活 prompt,不再使用 hi/ping 或包含“模型检测”的明显探活内容。',
       '测活请求改为自然短问题,降低被服务商识别为健康检查的概率。',
-    ],
-  },
-  {
-    version: 'v0.0.39',
-    updatedAt: '2026-06-06',
-    summary: [
-      '调整“全部同步”过程显示:每个 Provider 的“正在同步”下面立即显示 ✅/⚠ 单行结果和耗时。',
-      '保留最终“同步摘要 + 旧式汇总明细”,同时过程显示不再只有进度行。',
     ],
   },
 ];
@@ -1892,6 +1892,37 @@ function providersState() {
   }));
 }
 
+function inferProviderDisplayName(provider, fallback = '') {
+  if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
+    const inferred = String(provider.models[0].name).split(' / ')[0].trim();
+    if (inferred) return inferred;
+  }
+  return fallback;
+}
+
+function collectProviderDisplayNames(cfg = {}, displayNames = {}) {
+  const providers = cfg.models?.providers || {};
+  const rows = [];
+  for (const [id, provider] of Object.entries(providers)) {
+    const names = new Set();
+    if (displayNames[id]) names.add(String(displayNames[id]).trim());
+    const inferred = inferProviderDisplayName(provider, id);
+    if (inferred) names.add(String(inferred).trim());
+    for (const name of names) {
+      if (name) rows.push({ id, name });
+    }
+  }
+  return rows;
+}
+
+function findProviderDisplayNameConflict(name, cfg = {}, displayNames = {}, options = {}) {
+  const text = String(name || '').trim();
+  if (!text) return null;
+  const excludeId = options.excludeId || '';
+  const lowered = text.toLowerCase();
+  return collectProviderDisplayNames(cfg, displayNames).find((item) => item.id !== excludeId && item.name.toLowerCase() === lowered) || null;
+}
+
 function askFactory() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
@@ -2301,6 +2332,8 @@ async function addProvider(ask) {
   if (!isValidProviderId(providerName)) return warn('provider id 格式无效,只能包含字母、数字、下划线(_)和短横线(-)。');
   if (state.cfg.models?.providers?.[providerName]) return warn(`Provider 已存在:${providerName},请换一个 provider id 或先修改/删除旧 API。`);
   const displayName = await ask(color('输入显示名称（中文可填，直接回车则同 provider id）：', C.bold)) || providerName;
+  const displayNameConflict = findProviderDisplayNameConflict(displayName, state.cfg, state.displayNames, { excludeId: providerName });
+  if (displayNameConflict) return warn(`显示名称已被 ${displayNameConflict.id} 使用:${displayName},请换一个显示名称。`);
   const baseUrlInput = await ask(color('输入 Base URL（例如 https://api.example.com/v1）：', C.bold));
   if (!baseUrlInput) return warn('Base URL 不能为空。');
   const baseUrl = normalizeAndValidateBaseUrl(baseUrlInput);
@@ -2585,6 +2618,11 @@ async function modifyProvider(ask) {
         console.log('');
         const input = await ask(color(`当前中文显示名: ${row.displayName}\n请输入新的中文显示名(直接回车保持不变): `, C.bold));
         newDisplayName = input.trim() ? input.trim() : row.displayName;
+        const displayNameConflict = findProviderDisplayNameConflict(newDisplayName, cfg, displayNames, { excludeId: row.id });
+        if (displayNameConflict) {
+          warn(`显示名称已被 ${displayNameConflict.id} 使用:${newDisplayName},请换一个显示名称。`);
+          continue;
+        }
       }
       if (action === '3' || action === '5') {
         console.log('');

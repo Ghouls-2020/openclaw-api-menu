@@ -173,11 +173,41 @@ function normalizeModel(displayName, id) {
   };
 }
 
+function inferProviderDisplayName(provider, fallback = '') {
+  if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
+    const inferred = String(provider.models[0].name).split(' / ')[0].trim();
+    if (inferred) return inferred;
+  }
+  return fallback;
+}
+
+function findProviderDisplayNameConflict(name, providers = {}, displayNames = {}, excludeId = '') {
+  const text = String(name || '').trim().toLowerCase();
+  if (!text) return null;
+  for (const [id, provider] of Object.entries(providers || {})) {
+    if (id === excludeId) continue;
+    const names = new Set();
+    if (displayNames[id]) names.add(String(displayNames[id]).trim());
+    const inferred = inferProviderDisplayName(provider, id);
+    if (inferred) names.add(String(inferred).trim());
+    for (const candidate of names) {
+      if (candidate && candidate.toLowerCase() === text) return { id, name: candidate };
+    }
+  }
+  return null;
+}
+
 const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
 if (cfg.models.providers[providerName]) {
   console.error(`Provider already exists: ${providerName}`);
+  process.exit(2);
+}
+const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
+const displayNameConflict = findProviderDisplayNameConflict(providerDisplayName, cfg.models.providers, displayNames, providerName);
+if (displayNameConflict) {
+  console.error(`Display name already exists: ${providerDisplayName} (${displayNameConflict.id})`);
   process.exit(2);
 }
 if (!cfg.agents) cfg.agents = {};
@@ -255,7 +285,6 @@ if (patchRes.status !== 0) {
   process.exit(patchRes.status || 4);
 }
 
-const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
 displayNames[providerName] = providerDisplayName;
 writeJson(DISPLAY_NAMES, displayNames);
 

@@ -221,6 +221,30 @@ function getProviderDisplayName(name) {
   return displayNames[name] || name;
 }
 
+function inferProviderDisplayName(provider, fallback = '') {
+  if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
+    const inferred = String(provider.models[0].name).split(' / ')[0].trim();
+    if (inferred) return inferred;
+  }
+  return fallback;
+}
+
+function findProviderDisplayNameConflict(name, excludeId = '') {
+  const text = String(name || '').trim().toLowerCase();
+  if (!text) return null;
+  for (const [id, providerItem] of Object.entries(providers || {})) {
+    if (id === excludeId) continue;
+    const names = new Set();
+    if (displayNames[id]) names.add(String(displayNames[id]).trim());
+    const inferred = inferProviderDisplayName(providerItem, id);
+    if (inferred) names.add(String(inferred).trim());
+    for (const candidate of names) {
+      if (candidate && candidate.toLowerCase() === text) return { id, name: candidate };
+    }
+  }
+  return null;
+}
+
 if (action === 'check') {
   if (!provider || !providerName) {
     console.log(`Provider not found: ${providerInput}`);
@@ -246,9 +270,9 @@ if (action === 'rename') {
     console.error('Usage: node provider-manage.mjs rename <providerNameOrDisplayName> <providerDisplayName>');
     process.exit(3);
   }
-  const conflict = Object.entries(displayNames).find(([key, value]) => key !== providerName && String(value).toLowerCase() === String(providerDisplayName).toLowerCase());
+  const conflict = findProviderDisplayNameConflict(providerDisplayName, providerName);
   if (conflict) {
-    console.error(`Display name already exists: ${providerDisplayName} (${conflict[0]})`);
+    console.error(`Display name already exists: ${providerDisplayName} (${conflict.id})`);
     process.exit(3);
   }
   const backup = maybeCreateConfigBackup();
