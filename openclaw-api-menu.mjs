@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.58',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复全部同步摘要新增/移除统计,改为累加每个 Provider 的实际 added/removed 模型数。',
+      '新增 API 前先拒绝重复 provider id;provider-manage 对非法旧 id 和重复显示名增加保护。',
+    ],
+  },
+  {
     version: 'v0.0.57',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '调整“全部同步”过程显示:每个 Provider 的“正在同步”下面立即显示 ✅/⚠ 单行结果和耗时。',
       '保留最终“同步摘要 + 旧式汇总明细”,同时过程显示不再只有进度行。',
-    ],
-  },
- {
-    version: 'v0.0.37',
-    updatedAt: '2026-06-06',
-    summary: [
-      '修正“全部同步”并发控制实际未生效的问题,现在真正最多 5 个 Provider 并发。',
-      '移除遗留 detailLines 收集逻辑,确保不会再出现重复的“同步明细”汇总输出。',
     ],
   },
 ];
@@ -2299,6 +2299,7 @@ async function addProvider(ask) {
   const providerName = await ask(color('输入 provider id（英文，唯一）：', C.bold));
   if (!providerName) return info('操作已取消。');
   if (!isValidProviderId(providerName)) return warn('provider id 格式无效,只能包含字母、数字、下划线(_)和短横线(-)。');
+  if (state.cfg.models?.providers?.[providerName]) return warn(`Provider 已存在:${providerName},请换一个 provider id 或先修改/删除旧 API。`);
   const displayName = await ask(color('输入显示名称（中文可填，直接回车则同 provider id）：', C.bold)) || providerName;
   const baseUrlInput = await ask(color('输入 Base URL（例如 https://api.example.com/v1）：', C.bold));
   if (!baseUrlInput) return warn('Base URL 不能为空。');
@@ -2383,12 +2384,12 @@ async function syncAllProviders(ask) {
     return;
   }
   const beforeCfg = readJson(CONFIG, {});
-  const beforeCounts = new Map(rows.map((row) => [row.id, Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0]));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
   const replacePaths = [];
   let successCount = 0, failCount = 0;
+  let addedTotal = 0, removedTotal = 0, unchangedProviders = 0;
   const detailLines = [];
   for (const [idx, row] of rows.entries()) {
     console.log('');
@@ -2408,6 +2409,9 @@ async function syncAllProviders(ask) {
     const { added, removed } = formatModelDelta(beforeIds, afterIds);
     if (item.status === 0) {
       successCount++;
+      addedTotal += added.length;
+      removedTotal += removed.length;
+      if (added.length === 0 && removed.length === 0) unchangedProviders++;
       const providerPatch = {
         ...beforeProvider,
         models: item.ids.map((id) => normalizeModel(row.displayName || row.id, id)),
@@ -2448,16 +2452,7 @@ async function syncAllProviders(ask) {
       return;
     }
   }
-  const afterCfg = readJson(CONFIG, {});
-  let addedTotal = 0, removedTotal = 0, unchangedProviders = 0;
-  for (const row of rows) {
-    const before = beforeCounts.get(row.id) || 0;
-    const after = Array.isArray(afterCfg.models?.providers?.[row.id]?.models) ? afterCfg.models.providers[row.id].models.length : 0;
-    if (after > before) addedTotal += (after - before);
-    else if (after < before) removedTotal += (before - after);
-    else unchangedProviders++;
-  }
-  console.log(color(`同步摘要：共检查 ${rows.length} 个提供商，新增 ${addedTotal} 个模型，移除 ${removedTotal} 个模型，${unchangedProviders} 个提供商模型数未变化。`, C.white));
+  console.log(color(`同步摘要：共检查 ${rows.length} 个提供商，新增 ${addedTotal} 个模型，移除 ${removedTotal} 个模型，${unchangedProviders} 个提供商模型未变化。`, C.white));
   for (const line of detailLines) console.log(line);
   if (failCount > 0) {
     info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');

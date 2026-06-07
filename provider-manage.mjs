@@ -152,8 +152,21 @@ function resolveProviderKey(input) {
   return null;
 }
 
+function isValidProviderId(value) {
+  return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
+}
+
+function refuseInvalidProviderId(name) {
+  if (isValidProviderId(name)) return;
+  console.error(`Provider id 非法: ${name}`);
+  console.error('当前脚本不会对包含点号(.)、斜杠(/)等字符的旧 provider id 执行 check/sync/remove/rename,避免 OpenClaw patch 路径或模型引用解析错位。');
+  console.error('请先手动迁移/改名为只包含字母、数字、下划线(_)和短横线(-)的 provider id。');
+  process.exit(6);
+}
+
 const providerName = resolveProviderKey(providerInput);
 const provider = providerName ? providers[providerName] : null;
+if (providerName) refuseInvalidProviderId(providerName);
 
 function refsFor(name) {
   return Object.keys(modelMap).filter(k => k.split('/')[0].toLowerCase() === name.toLowerCase());
@@ -231,6 +244,11 @@ if (action === 'rename') {
   }
   if (!providerDisplayName) {
     console.error('Usage: node provider-manage.mjs rename <providerNameOrDisplayName> <providerDisplayName>');
+    process.exit(3);
+  }
+  const conflict = Object.entries(displayNames).find(([key, value]) => key !== providerName && String(value).toLowerCase() === String(providerDisplayName).toLowerCase());
+  if (conflict) {
+    console.error(`Display name already exists: ${providerDisplayName} (${conflict[0]})`);
     process.exit(3);
   }
   const backup = maybeCreateConfigBackup();

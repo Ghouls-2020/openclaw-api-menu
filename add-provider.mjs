@@ -176,6 +176,10 @@ function normalizeModel(displayName, id) {
 const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
+if (cfg.models.providers[providerName]) {
+  console.error(`Provider already exists: ${providerName}`);
+  process.exit(2);
+}
 if (!cfg.agents) cfg.agents = {};
 if (!cfg.agents.defaults) cfg.agents.defaults = {};
 if (!cfg.agents.defaults.models) cfg.agents.defaults.models = {};
