@@ -23,11 +23,11 @@ const MODEL_STATUS_TIMEOUT_MS = 5000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
 const PROVIDER_STATUS_TIMEOUT_MS = 3000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
-const MODEL_STATUS_TEST_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
-const MODEL_STATUS_DEFAULT_PROMPT = '给我解释一下 HTTP 和 HTTPS 的区别，用3点说明';
+const MODEL_STATUS_TEST_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
+const MODEL_STATUS_DEFAULT_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
 const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
 const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
-const MODEL_STATUS_CACHE_SCHEMA = 'v6';
+const MODEL_STATUS_CACHE_SCHEMA = 'v7';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
 const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.50',
+    updatedAt: '2026-06-07',
+    summary: [
+      '将模型测活 prompt 缩短为“用一句话说明 HTTPS 比 HTTP 多了什么。”。',
+      '不调整测活超时、重试和并发逻辑,先观察较短自然问题是否减少常用模型检测超时。',
+    ],
+  },
   {
     version: 'v0.0.49',
     updatedAt: '2026-06-07',
