@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.56',
+    updatedAt: '2026-06-07',
+    summary: [
+      '优化 ocapi 快捷命令提示:检测到已有 alias 时不再重复显示“已存在快捷命令”。',
+      '仅在实际新增快捷命令或新增失败时输出相关提示,减少启动时重复刷屏。',
+    ],
+  },
+  {
     version: 'v0.0.55',
     updatedAt: '2026-06-07',
     summary: [
@@ -210,14 +218,6 @@ const MENU_VERSION_HISTORY = [
       '移除遗留 detailLines 收集逻辑,确保不会再出现重复的“同步明细”汇总输出。',
     ],
   },
-  {
-    version: 'v0.0.36',
-    updatedAt: '2026-06-06',
-    summary: [
-      '移除“全部同步”结束后的重复“同步明细”汇总输出。',
-      '全部同步结果只在每个 Provider 完成时逐个展示,避免最后再次打印同一批结果。',
-    ],
-  },
 ];
 const MENU_BACKUP_PREFIX = 'openclaw-api-menu.mjs-v';
 const MENU_BACKUP_DIR = path.join(__dirname, 'openclaw-api-menu-backups');
@@ -334,7 +334,6 @@ function ensureOcapiShortcut(options = {}) {
     const targetPath = path.join(os.homedir(), targetName);
     const current = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : '';
     if (/^\s*alias\s+ocapi=/m.test(current) || current.includes(aliasLine)) {
-      if (verbose) info(`已存在快捷命令: ocapi (${targetPath})`);
       return { changed: false, exists: true, path: targetPath };
     }
     const prefix = current && !current.endsWith('\n') ? '\n' : '';
