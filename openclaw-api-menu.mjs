@@ -20,8 +20,8 @@ const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
 const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
-const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 3000;
-const PROVIDER_STATUS_TIMEOUT_MS = 3000;
+const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 8000;
+const PROVIDER_STATUS_TIMEOUT_MS = 8000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_TEST_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
 const MODEL_STATUS_DEFAULT_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
@@ -57,6 +57,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.57',
+    updatedAt: '2026-06-07',
+    summary: [
+      '将添加 API 和 Provider 状态检测超时从 3000ms 调整为 8000ms,减少慢接口误判超时。',
+      '同步更新辅助脚本的请求超时提示,保持菜单和命令行行为一致。',
+    ],
+  },
   {
     version: 'v0.0.56',
     updatedAt: '2026-06-07',
@@ -202,15 +210,7 @@ const MENU_VERSION_HISTORY = [
       '保留最终“同步摘要 + 旧式汇总明细”,同时过程显示不再只有进度行。',
     ],
   },
-  {
-    version: 'v0.0.38',
-    updatedAt: '2026-06-06',
-    summary: [
-      '恢复“全部同步”最终汇总的旧式显示:先输出同步摘要,再按 Provider 输出 ✅/⚠ 单行结果。',
-      '新增/删除模型列表继续在对应 Provider 下展开,不再使用“已同步 Provider/显示名称/当前模型数”块状格式。',
-    ],
-  },
-  {
+ {
     version: 'v0.0.37',
     updatedAt: '2026-06-06',
     summary: [
