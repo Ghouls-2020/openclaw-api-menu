@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.61',
+    updatedAt: '2026-06-07',
+    summary: [
+      '修复主菜单全部同步后默认模型仍可能指向已移除模型的问题。',
+      '全部同步现在会同步修复 model/imageModel/pdfModel/audioModel/videoGenerationModel/musicGenerationModel 的失效 primary/fallbacks 引用。',
+    ],
+  },
+  {
     version: 'v0.0.60',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将模型测活超时从 3 秒调整为 5 秒,配合更自然的 HTTP/HTTPS 问题减少误判超时。',
       '/models 同步超时仍保持 3 秒,只放宽切换模型前的真实调用测活。',
-    ],
-  },
-  {
-    version: 'v0.0.41',
-    updatedAt: '2026-06-06',
-    summary: [
-      '将模型测活 prompt 改为“给我解释一下 HTTP 和 HTTPS 的区别，用3点说明”。',
-      '继续避免 hi/ping/模型检测 等明显探活内容,让测活请求更像正常用户问题。',
     ],
   },
 ];
@@ -2074,6 +2074,61 @@ function buildDefaultSelectionPatch(defaults = {}) {
   return patch;
 }
 
+function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
+  const defaults = config.agents?.defaults;
+  if (!defaults) return { changed: false, messages: [] };
+  const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
+  const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
+  const messages = [];
+  let changed = false;
+
+  const isSameProviderRef = (ref) => typeof ref === 'string' && splitModelRef(ref)[0]?.toLowerCase() === providerName.toLowerCase();
+  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
+
+  const repairString = (fieldName) => {
+    const value = defaults[fieldName];
+    if (!isInvalidSyncedRef(value)) return;
+    if (fallbackRef) {
+      defaults[fieldName] = fallbackRef;
+      messages.push(`${fieldName}: ${value} -> ${fallbackRef}`);
+    } else {
+      delete defaults[fieldName];
+      messages.push(`${fieldName}: 已清理失效引用 ${value}`);
+    }
+    changed = true;
+  };
+
+  const repairObject = (fieldName) => {
+    const value = defaults[fieldName];
+    if (!value || typeof value !== 'object') return;
+    if (isInvalidSyncedRef(value.primary)) {
+      const old = value.primary;
+      if (fallbackRef) value.primary = fallbackRef;
+      else delete value.primary;
+      messages.push(`${fieldName}.primary: ${old}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      changed = true;
+    }
+    if (Array.isArray(value.fallbacks)) {
+      const before = value.fallbacks.length;
+      value.fallbacks = value.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      if (value.fallbacks.length !== before) {
+        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效引用`);
+        changed = true;
+      }
+    }
+    if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
+      delete defaults[fieldName];
+      changed = true;
+    }
+  };
+
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+    repairString(field);
+    repairObject(field);
+  }
+  return { changed, messages };
+}
+
 function guessInputCaps(id) {
   return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
 }
@@ -2417,6 +2472,7 @@ async function syncAllProviders(ask) {
     return;
   }
   const beforeCfg = readJson(CONFIG, {});
+  const nextCfg = JSON.parse(JSON.stringify(beforeCfg));
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
@@ -2424,6 +2480,7 @@ async function syncAllProviders(ask) {
   let successCount = 0, failCount = 0;
   let addedTotal = 0, removedTotal = 0, unchangedProviders = 0;
   const detailLines = [];
+  const repairedDefaultLines = [];
   for (const [idx, row] of rows.entries()) {
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
@@ -2450,6 +2507,13 @@ async function syncAllProviders(ask) {
         models: item.ids.map((id) => normalizeModel(row.displayName || row.id, id)),
       };
       patchPayload.models.providers[row.id] = providerPatch;
+      if (!nextCfg.models) nextCfg.models = {};
+      if (!nextCfg.models.providers) nextCfg.models.providers = {};
+      nextCfg.models.providers[row.id] = providerPatch;
+      const repairedDefaults = repairModelSelectionForSyncedProvider(nextCfg, row.id, item.ids);
+      if (repairedDefaults.changed) {
+        for (const msg of repairedDefaults.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
+      }
       replacePaths.push(`models.providers.${row.id}.models`);
       patchPayload.agents.defaults.models[`${row.id}/*`] = {};
       for (const [ref, value] of Object.entries(beforeCfg.agents?.defaults?.models || {})) {
@@ -2475,6 +2539,8 @@ async function syncAllProviders(ask) {
     }
   }
   if (successCount > 0) {
+    const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {});
+    patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
     const allSyncBackup = createConfigBackup('sync-all-providers');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
@@ -2487,6 +2553,10 @@ async function syncAllProviders(ask) {
   }
   console.log(color(`同步摘要：共检查 ${rows.length} 个提供商，新增 ${addedTotal} 个模型，移除 ${removedTotal} 个模型，${unchangedProviders} 个提供商模型未变化。`, C.white));
   for (const line of detailLines) console.log(line);
+  if (repairedDefaultLines.length) {
+    info('已修复默认模型引用:');
+    for (const line of repairedDefaultLines) console.log(color(`- ${line}`, C.white));
+  }
   if (failCount > 0) {
     info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');
   }
