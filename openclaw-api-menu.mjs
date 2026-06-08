@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.67',
+    updatedAt: '2026-06-08',
+    summary: [
+      '统一 Provider/API 状态文案为“在线、在线但异常、离线/不可达”。',
+      '菜单 1、菜单 8、API 列表等 Provider 状态不再使用“可用但异常”,避免和模型可用性混淆。',
+    ],
+  },
+  {
     version: 'v0.0.66',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将脚本辅助 JSON 的创建/重置写入改为 tmp + rename 原子写,避免中断时产生半文件。',
       '会话模型直接写 sessions.json 后新增校验提示;list-providers-cn 的状态检测超时统一为 3 秒。',
-    ],
-  },
-  {
-    version: 'v0.0.47',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复模型测活 SSE 流解析重复处理历史 chunk 的问题,改为按缓冲区只处理新增完整行。',
-      '修复 provider-manage 同步时先 delete modelMap 导致过期模型 ref 无法作为 null patch 删除的问题。',
     ],
   },
 ];
@@ -1867,7 +1867,7 @@ function getStatusVisual(status) {
     const detail = status?.error ? ` ${status.error}` : '';
     return {
       statusDot: color('●', C.yellow),
-      latencyText: status?.latency ? color(`可用但异常 ${status.latency}ms${detail}`, C.yellow, C.bold) : color(`可用但异常${detail}`, C.yellow, C.bold),
+      latencyText: status?.latency ? color(`在线但异常 ${status.latency}ms${detail}`, C.yellow, C.bold) : color(`在线但异常${detail}`, C.yellow, C.bold),
     };
   }
   return {
@@ -1928,7 +1928,7 @@ function formatProviderStatusForProviderList(status) {
   if (state === 'reachable_error') {
     const detail = status?.error ? ` | ${color(status.error, C.gray)}` : '';
     const latencyText = status?.latency ? ` | ${color(`${status.latency}ms`, latencyColor, C.bold)}` : '';
-    return `${color('可用但异常', C.yellow, C.bold)}${latencyText}${detail}`;
+    return `${color('在线但异常', C.yellow, C.bold)}${latencyText}${detail}`;
   }
   return color('离线/不可达', C.red, C.bold);
 }
