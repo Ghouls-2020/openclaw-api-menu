@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.65',
+    updatedAt: '2026-06-08',
+    summary: [
+      'API 状态异常时补充 HTTP 状态码中文原因,例如 403 权限不足、502 上游网关异常。',
+      'Provider 列表继续保持原因放在最后,方便快速判断异常类型。',
+    ],
+  },
+  {
     version: 'v0.0.64',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复同步流程仍会重新写入具体 provider/model allowlist ref 的问题,现在只维护 provider/* 通配项。',
       '同步时会清理 provider/* 覆盖下的空对象具体 ref;API 状态检测超时统一改为 3 秒。',
-    ],
-  },
-  {
-    version: 'v0.0.45',
-    updatedAt: '2026-06-07',
-    summary: [
-      '临时关闭同步模型后的智能重启 Gateway 逻辑,便于排查新增/删除模型与运行时刷新问题。',
-      '保留 provider/* 通配 allowlist 自动维护;同步流程不再自动触发 openclaw gateway restart。',
     ],
   },
 ];
@@ -1370,6 +1370,37 @@ function maskUrl(url) {
   }
 }
 
+function explainHttpStatus(status) {
+  const code = Number(status);
+  const reasons = {
+    400: '请求参数错误',
+    401: '认证失败/API Key无效',
+    402: '余额不足/需要付费',
+    403: '权限不足/Key无权限',
+    404: '接口路径或模型不存在',
+    408: '请求超时',
+    409: '请求冲突',
+    413: '请求体过大',
+    415: '请求格式不支持',
+    422: '参数校验失败',
+    429: '请求过多/限流',
+    500: '服务端内部错误',
+    501: '接口未实现',
+    502: '上游网关异常',
+    503: '服务暂不可用',
+    504: '网关超时',
+  };
+  if (reasons[code]) return reasons[code];
+  if (code >= 400 && code < 500) return '客户端请求异常';
+  if (code >= 500 && code < 600) return '服务端或上游异常';
+  return '';
+}
+
+function formatHttpStatusError(status) {
+  const reason = explainHttpStatus(status);
+  return reason ? `HTTP ${status} ${reason}` : `HTTP ${status}`;
+}
+
 async function detectProviderStatus(provider) {
   try {
     if (!provider?.baseUrl || !provider?.apiKey) return { online: false, latency: null, error: '未配置baseUrl或apiKey', _cached: false };
@@ -1397,7 +1428,7 @@ async function detectProviderStatus(provider) {
         latency,
         httpStatus: res.status,
         state: res.ok ? 'available' : 'reachable_error',
-        error: res.ok ? null : `HTTP ${res.status}`,
+        error: res.ok ? null : formatHttpStatusError(res.status),
       };
       providerStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return { ...result, _cached: false };

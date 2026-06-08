@@ -65,6 +65,37 @@ function maskUrl(url) {
   }
 }
 
+function explainHttpStatus(status) {
+  const code = Number(status);
+  const reasons = {
+    400: '请求参数错误',
+    401: '认证失败/API Key无效',
+    402: '余额不足/需要付费',
+    403: '权限不足/Key无权限',
+    404: '接口路径或模型不存在',
+    408: '请求超时',
+    409: '请求冲突',
+    413: '请求体过大',
+    415: '请求格式不支持',
+    422: '参数校验失败',
+    429: '请求过多/限流',
+    500: '服务端内部错误',
+    501: '接口未实现',
+    502: '上游网关异常',
+    503: '服务暂不可用',
+    504: '网关超时',
+  };
+  if (reasons[code]) return reasons[code];
+  if (code >= 400 && code < 500) return '客户端请求异常';
+  if (code >= 500 && code < 600) return '服务端或上游异常';
+  return '';
+}
+
+function formatHttpStatusError(status) {
+  const reason = explainHttpStatus(status);
+  return reason ? `HTTP ${status} ${reason}` : `HTTP ${status}`;
+}
+
 async function detectProviderStatus(provider) {
   if (!provider?.baseUrl || !provider?.apiKey) {
     return { online: false, latency: null, error: '未配置baseUrl或apiKey' };
@@ -89,7 +120,7 @@ async function detectProviderStatus(provider) {
       latency,
       httpStatus: res.status,
       state: res.ok ? 'available' : 'reachable_error',
-      error: res.ok ? null : `HTTP ${res.status}`,
+      error: res.ok ? null : formatHttpStatusError(res.status),
     };
   } catch (err) {
     clearTimeout(timeoutId);
