@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.66',
+    updatedAt: '2026-06-08',
+    summary: [
+      '调整 Provider 连通状态文案,正常连通时显示“在线”而不是“可用”。',
+      '常用模型菜单中 Provider 状态和模型测活结果分开显示,避免“可用 | 可用”混淆。',
+    ],
+  },
+  {
     version: 'v0.0.65',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复模型测活 SSE 流解析重复处理历史 chunk 的问题,改为按缓冲区只处理新增完整行。',
       '修复 provider-manage 同步时先 delete modelMap 导致过期模型 ref 无法作为 null patch 删除的问题。',
-    ],
-  },
-  {
-    version: 'v0.0.46',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复同步流程仍会重新写入具体 provider/model allowlist ref 的问题,现在只维护 provider/* 通配项。',
-      '同步时会清理 provider/* 覆盖下的空对象具体 ref;API 状态检测超时统一改为 3 秒。',
     ],
   },
 ];
@@ -1860,7 +1860,7 @@ function getStatusVisual(status) {
   if (state === 'available') {
     return {
       statusDot: color('●', latencyColor),
-      latencyText: status?.latency ? color(`可用 ${status.latency}ms`, latencyColor) : color('可用', C.green, C.bold),
+      latencyText: status?.latency ? color(`在线 ${status.latency}ms`, latencyColor) : color('在线', C.green, C.bold),
     };
   }
   if (state === 'reachable_error') {
@@ -1923,7 +1923,7 @@ function formatProviderStatusForProviderList(status) {
   const state = status?.state || (status?.online ? 'available' : status?.reachable ? 'reachable_error' : 'offline');
   if (state === 'available') {
     const latencyText = status?.latency ? color(`${status.latency}ms`, latencyColor, C.bold) : '';
-    return latencyText ? `${color('可用', C.green, C.bold)} | ${latencyText}` : color('可用', C.green, C.bold);
+    return latencyText ? `${color('在线', C.green, C.bold)} | ${latencyText}` : color('在线', C.green, C.bold);
   }
   if (state === 'reachable_error') {
     const detail = status?.error ? ` | ${color(status.error, C.gray)}` : '';
