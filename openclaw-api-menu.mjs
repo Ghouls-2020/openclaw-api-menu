@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.63',
+    updatedAt: '2026-06-08',
+    summary: [
+      '优化 API 状态检测展示,将 Provider 状态区分为可用、可达但异常、离线三档。',
+      'HTTP 401/403/404/429/5xx 不再显示为在线,避免把地址可达误判为模型可用。',
+    ],
+  },
+  {
     version: 'v0.0.62',
     updatedAt: '2026-06-07',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '新增/同步 Provider 时自动维护 agents.defaults.models 的 provider/* 通配 allowlist。',
       'Provider 改名时同步迁移 provider/* 通配项,让新服务商后续新增模型默认可被当前 agent 使用。',
-    ],
-  },
-  {
-    version: 'v0.0.43',
-    updatedAt: '2026-06-06',
-    summary: [
-      '新增智能重启:同步模型后检测到模型列表有新增或删除时,自动重启 Gateway 刷新运行时模型目录。',
-      '全部同步和单个 Provider 同步均支持智能重启;无模型变化时不会重启。',
     ],
   },
 ];
@@ -1391,12 +1391,25 @@ async function detectProviderStatus(provider) {
       });
       clearTimeout(timeoutId);
       const latency = Date.now() - start;
-      const result = { online: res.ok, latency, error: res.ok ? null : `HTTP ${res.status}` };
+      const result = {
+        online: res.ok,
+        reachable: true,
+        latency,
+        httpStatus: res.status,
+        state: res.ok ? 'available' : 'reachable_error',
+        error: res.ok ? null : `HTTP ${res.status}`,
+      };
       providerStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return { ...result, _cached: false };
     } catch (err) {
       clearTimeout(timeoutId);
-      const result = { online: false, latency: null, error: err.name === 'AbortError' ? '超时' : err.message };
+      const result = {
+        online: false,
+        reachable: false,
+        latency: null,
+        state: 'offline',
+        error: err.name === 'AbortError' ? '超时' : err.message,
+      };
       providerStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return { ...result, _cached: false };
     }
@@ -1812,9 +1825,23 @@ function getStatusVisual(status) {
   let latencyColor = C.green;
   if (status?.latency >= 200 && status.latency < 500) latencyColor = C.yellow;
   else if (status?.latency >= 500) latencyColor = C.magenta;
+  const state = status?.state || (status?.online ? 'available' : status?.reachable ? 'reachable_error' : 'offline');
+  if (state === 'available') {
+    return {
+      statusDot: color('●', latencyColor),
+      latencyText: status?.latency ? color(`可用 ${status.latency}ms`, latencyColor) : color('可用', C.green, C.bold),
+    };
+  }
+  if (state === 'reachable_error') {
+    const detail = status?.error ? ` ${status.error}` : '';
+    return {
+      statusDot: color('●', C.yellow),
+      latencyText: status?.latency ? color(`可达但异常${detail} ${status.latency}ms`, C.yellow, C.bold) : color(`可达但异常${detail}`, C.yellow, C.bold),
+    };
+  }
   return {
-    statusDot: status?.online ? color('●', latencyColor) : color('●', C.red, C.blink),
-    latencyText: status?.online && status?.latency ? color(`${status.latency}ms`, latencyColor) : color('不可用', C.red, C.bold),
+    statusDot: color('●', C.red, C.blink),
+    latencyText: color('离线/不可达', C.red, C.bold),
   };
 }
 
@@ -1862,11 +1889,17 @@ function formatProviderStatusCompact(status) {
 function formatProviderStatusForProviderList(status) {
   if (status?.checking) return color('检测中', C.yellow, C.bold);
   const latencyColor = status?.latency < 200 ? C.green : status?.latency < 500 ? C.yellow : C.magenta;
-  const stateText = status?.online ? color('在线', C.green, C.bold) : color('离线', C.red, C.bold);
-  const latencyText = status?.online && status?.latency
-    ? color(`${status.latency}ms`, latencyColor, C.bold)
-    : '';
-  return latencyText ? `${stateText} | ${latencyText}` : `${stateText}`;
+  const state = status?.state || (status?.online ? 'available' : status?.reachable ? 'reachable_error' : 'offline');
+  if (state === 'available') {
+    const latencyText = status?.latency ? color(`${status.latency}ms`, latencyColor, C.bold) : '';
+    return latencyText ? `${color('可用', C.green, C.bold)} | ${latencyText}` : color('可用', C.green, C.bold);
+  }
+  if (state === 'reachable_error') {
+    const detail = status?.error ? ` | ${color(status.error, C.gray)}` : '';
+    const latencyText = status?.latency ? ` | ${color(`${status.latency}ms`, latencyColor, C.bold)}` : '';
+    return `${color('可达但异常', C.yellow, C.bold)}${detail}${latencyText}`;
+  }
+  return color('离线/不可达', C.red, C.bold);
 }
 
 function providersState() {
@@ -2833,12 +2866,9 @@ async function showProvidersDetail(ask) {
     const name = formatProviderRow(row);
     const url = maskUrl(row.baseUrl);
     const modelText = color(`${row.models}个模型`, C.yellow, C.bold);
-    const stateText = status?.online ? color('在线', C.green, C.bold) : color('离线', C.red, C.bold);
-    const latencyText = status?.online && status?.latency
-      ? color(`${status.latency}ms`, status.latency < 200 ? C.green : status.latency < 500 ? C.yellow : C.magenta, C.bold)
-      : color(status?.error || '不可用', C.gray);
+    const providerStatusText = formatProviderStatusForProviderList(status);
     const currentTag = row.isPrimary ? ` | ${color('[默认]', C.yellow, C.bold)}` : '';
-    return renderNumberedLine(i + 1, `${name} | ${url}`, `${modelText} | ${stateText} | ${latencyText}${currentTag}`, { rawNote: true });
+    return renderNumberedLine(i + 1, `${name} | ${url}`, `${modelText} | ${providerStatusText}${currentTag}`, { rawNote: true });
   });
 
   printInfoLines(lines);

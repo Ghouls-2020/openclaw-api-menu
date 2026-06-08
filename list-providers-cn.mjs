@@ -83,12 +83,23 @@ async function detectProviderStatus(provider) {
     });
     clearTimeout(timeoutId);
     const latency = Date.now() - start;
-    // 只要能收到响应就算在线,不管是200/401/403,说明接口可达
-    return { online: true, latency, error: res.ok ? null : `HTTP ${res.status}` };
+    return {
+      online: res.ok,
+      reachable: true,
+      latency,
+      httpStatus: res.status,
+      state: res.ok ? 'available' : 'reachable_error',
+      error: res.ok ? null : `HTTP ${res.status}`,
+    };
   } catch (err) {
     clearTimeout(timeoutId);
-    // 只有网络错误/超时才算不可用
-    return { online: false, latency: null, error: err.name === 'AbortError' ? '超时' : err.message };
+    return {
+      online: false,
+      reachable: false,
+      latency: null,
+      state: 'offline',
+      error: err.name === 'AbortError' ? '超时' : err.message,
+    };
   }
 }
 
@@ -142,10 +153,16 @@ rows.forEach((row, idx) => {
   const status = statusMap.get(row.id) || {};
   const no = String(idx + 1);
   const primaryBadge = row.isPrimary ? color(' [默认]', C.yellow, C.bold) : '';
-  const statusDot = status.online ? color('●', C.green) : color('●', C.red);
+  const state = status.state || (status.online ? 'available' : status.reachable ? 'reachable_error' : 'offline');
+  const statusDot = state === 'available' ? color('●', C.green) : state === 'reachable_error' ? color('●', C.yellow) : color('●', C.red);
   let latencyColor = C.green;
   if (status.latency >= 200 && status.latency < 500) latencyColor = C.yellow;
   else if (status.latency >= 500) latencyColor = C.magenta;
-  const latencyText = status.online && status.latency ? `${color(`${status.latency}ms`, latencyColor)}` : color('不可用', C.red);
-  console.log(`${color(`[${no}]`, C.green, C.bold)} ${row.displayName} (${row.id})${primaryBadge} | API: ${color(row.baseUrl, C.white)} | 协议: ${color(row.api, C.white)} | 模型数量: ${color(String(row.models), C.yellow, C.bold)} | 延迟/状态: ${statusDot} ${latencyText}`);
+  const latencySuffix = status.latency ? ` ${color(`${status.latency}ms`, latencyColor)}` : '';
+  const stateText = state === 'available'
+    ? color(`可用${latencySuffix}`, C.green)
+    : state === 'reachable_error'
+      ? color(`可达但异常${status.error ? ` ${status.error}` : ''}${latencySuffix}`, C.yellow)
+      : color(`离线/不可达${status.error ? ` ${status.error}` : ''}`, C.red);
+  console.log(`${color(`[${no}]`, C.green, C.bold)} ${row.displayName} (${row.id})${primaryBadge} | API: ${color(row.baseUrl, C.white)} | 协议: ${color(row.api, C.white)} | 模型数量: ${color(String(row.models), C.yellow, C.bold)} | 状态: ${statusDot} ${stateText}`);
 });
