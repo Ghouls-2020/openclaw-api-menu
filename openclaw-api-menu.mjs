@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.64',
+    updatedAt: '2026-06-08',
+    summary: [
+      '调整 API 异常状态文案,将“可达但异常”显示为“可用但异常”。',
+      '异常状态先显示延迟,再把 HTTP 状态码等原因放到最后。',
+    ],
+  },
+  {
     version: 'v0.0.63',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '临时关闭同步模型后的智能重启 Gateway 逻辑,便于排查新增/删除模型与运行时刷新问题。',
       '保留 provider/* 通配 allowlist 自动维护;同步流程不再自动触发 openclaw gateway restart。',
-    ],
-  },
-  {
-    version: 'v0.0.44',
-    updatedAt: '2026-06-06',
-    summary: [
-      '新增/同步 Provider 时自动维护 agents.defaults.models 的 provider/* 通配 allowlist。',
-      'Provider 改名时同步迁移 provider/* 通配项,让新服务商后续新增模型默认可被当前 agent 使用。',
     ],
   },
 ];
@@ -1836,7 +1836,7 @@ function getStatusVisual(status) {
     const detail = status?.error ? ` ${status.error}` : '';
     return {
       statusDot: color('●', C.yellow),
-      latencyText: status?.latency ? color(`可达但异常${detail} ${status.latency}ms`, C.yellow, C.bold) : color(`可达但异常${detail}`, C.yellow, C.bold),
+      latencyText: status?.latency ? color(`可用但异常 ${status.latency}ms${detail}`, C.yellow, C.bold) : color(`可用但异常${detail}`, C.yellow, C.bold),
     };
   }
   return {
@@ -1897,7 +1897,7 @@ function formatProviderStatusForProviderList(status) {
   if (state === 'reachable_error') {
     const detail = status?.error ? ` | ${color(status.error, C.gray)}` : '';
     const latencyText = status?.latency ? ` | ${color(`${status.latency}ms`, latencyColor, C.bold)}` : '';
-    return `${color('可达但异常', C.yellow, C.bold)}${detail}${latencyText}`;
+    return `${color('可用但异常', C.yellow, C.bold)}${latencyText}${detail}`;
   }
   return color('离线/不可达', C.red, C.bold);
 }

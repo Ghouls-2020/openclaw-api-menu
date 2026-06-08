@@ -162,7 +162,7 @@ rows.forEach((row, idx) => {
   const stateText = state === 'available'
     ? color(`可用${latencySuffix}`, C.green)
     : state === 'reachable_error'
-      ? color(`可达但异常${status.error ? ` ${status.error}` : ''}${latencySuffix}`, C.yellow)
+      ? color(`可用但异常${latencySuffix}${status.error ? ` ${status.error}` : ''}`, C.yellow)
       : color(`离线/不可达${status.error ? ` ${status.error}` : ''}`, C.red);
   console.log(`${color(`[${no}]`, C.green, C.bold)} ${row.displayName} (${row.id})${primaryBadge} | API: ${color(row.baseUrl, C.white)} | 协议: ${color(row.api, C.white)} | 模型数量: ${color(String(row.models), C.yellow, C.bold)} | 状态: ${statusDot} ${stateText}`);
 });
