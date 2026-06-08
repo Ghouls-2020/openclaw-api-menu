@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.68',
+    updatedAt: '2026-06-08',
+    summary: [
+      '常用模型菜单隐藏 Provider 异常原因,避免和模型不可用原因重复显示。',
+      '菜单 8 中 Provider 状态保留“在线但异常 | 延迟”,具体失败原因交给后面的模型检测结果显示。',
+    ],
+  },
+  {
     version: 'v0.0.67',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将“全部同步”从并发改回串行执行,每个服务商检测/同步完成并显示结果后再处理下一个。',
       '保持最终一次性 config patch 和旧式同步摘要不变,只调整同步执行顺序与显示节奏。',
-    ],
-  },
-  {
-    version: 'v0.0.48',
-    updatedAt: '2026-06-07',
-    summary: [
-      '将脚本辅助 JSON 的创建/重置写入改为 tmp + rename 原子写,避免中断时产生半文件。',
-      '会话模型直接写 sessions.json 后新增校验提示;list-providers-cn 的状态检测超时统一为 3 秒。',
     ],
   },
 ];
@@ -1917,7 +1917,8 @@ function formatProviderStatusCompact(status) {
   return `${statusDot} ${latencyText}`;
 }
 
-function formatProviderStatusForProviderList(status) {
+function formatProviderStatusForProviderList(status, options = {}) {
+  const showError = options.showError !== false;
   if (status?.checking) return color('检测中', C.yellow, C.bold);
   const latencyColor = status?.latency < 200 ? C.green : status?.latency < 500 ? C.yellow : C.magenta;
   const state = status?.state || (status?.online ? 'available' : status?.reachable ? 'reachable_error' : 'offline');
@@ -1926,7 +1927,7 @@ function formatProviderStatusForProviderList(status) {
     return latencyText ? `${color('在线', C.green, C.bold)} | ${latencyText}` : color('在线', C.green, C.bold);
   }
   if (state === 'reachable_error') {
-    const detail = status?.error ? ` | ${color(status.error, C.gray)}` : '';
+    const detail = showError && status?.error ? ` | ${color(status.error, C.gray)}` : '';
     const latencyText = status?.latency ? ` | ${color(`${status.latency}ms`, latencyColor, C.bold)}` : '';
     return `${color('在线但异常', C.yellow, C.bold)}${latencyText}${detail}`;
   }
@@ -2982,7 +2983,7 @@ async function quickSwitchFavorite(ask) {
         console.log('');
         insertedSplit = true;
       }
-      const note = `${formatProviderStatusForProviderList(providerStatus)} | ${formatModelCheckResultColored(modelStatus)}${item.ref === currentRef ? ` | ${color('[默认]', C.yellow, C.bold)}` : ''}`;
+      const note = `${formatProviderStatusForProviderList(providerStatus, { showError: false })} | ${formatModelCheckResultColored(modelStatus)}${item.ref === currentRef ? ` | ${color('[默认]', C.yellow, C.bold)}` : ''}`;
       console.log(renderNumberedLine(i + 1, `${providerLabel}(${providerId}) / ${modelId}`, note, { rawNote: true }));
     });
     printActionFooter([
