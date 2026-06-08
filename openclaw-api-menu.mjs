@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.69',
+    updatedAt: '2026-06-08',
+    summary: [
+      '清理群聊记录不再创建 sessions.json.bak.menu-delete 备份文件。',
+      '该操作仍只删除 OpenClaw 本地会话列表记录,不会退出或删除 Telegram 群。',
+    ],
+  },
+  {
     version: 'v0.0.68',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将模型测活 prompt 缩短为“用一句话说明 HTTPS 比 HTTP 多了什么。”。',
       '不调整测活超时、重试和并发逻辑,先观察较短自然问题是否减少常用模型检测超时。',
-    ],
-  },
-  {
-    version: 'v0.0.49',
-    updatedAt: '2026-06-07',
-    summary: [
-      '将“全部同步”从并发改回串行执行,每个服务商检测/同步完成并显示结果后再处理下一个。',
-      '保持最终一次性 config patch 和旧式同步摘要不变,只调整同步执行顺序与显示节奏。',
     ],
   },
 ];
@@ -819,11 +819,9 @@ function deleteTelegramSessionRecords(sessionKeys) {
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   const existingKeys = keys.filter((key) => store && Object.prototype.hasOwnProperty.call(store, key));
   if (!existingKeys.length) return { ok: true, deleted: 0, storePath };
-  const backup = `${storePath}.bak.menu-delete-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-  fs.copyFileSync(storePath, backup);
   for (const key of existingKeys) delete store[key];
   writeJson(storePath, store);
-  return { ok: true, deleted: existingKeys.length, backup, storePath };
+  return { ok: true, deleted: existingKeys.length, storePath };
 }
 
 function getPinnedTelegramSessionRank(key, entry = {}) {
