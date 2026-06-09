@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.70',
+    updatedAt: '2026-06-09',
+    summary: [
+      '删除 API 时如果该 Provider 正被默认主模型使用,主菜单提前阻止删除。',
+      '提示用户先到 [1] 换模型,避免确认删除后才被辅助脚本拒绝。',
+    ],
+  },
+  {
     version: 'v0.0.69',
     updatedAt: '2026-06-08',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复修改/删除 Provider 时默认模型、图片模型、音频模型、视频/音乐模型和 fallbacks 等选择字段可能残留旧 provider 引用的问题。',
       '增强配置备份文件名唯一性,彻底卸载前先停止 Gateway,查看 API 列表改为并发检测。',
-    ],
-  },
-  {
-    version: 'v0.0.50',
-    updatedAt: '2026-06-07',
-    summary: [
-      '将模型测活 prompt 缩短为“用一句话说明 HTTPS 比 HTTP 多了什么。”。',
-      '不调整测活超时、重试和并发逻辑,先观察较短自然问题是否减少常用模型检测超时。',
     ],
   },
 ];
@@ -2487,12 +2487,17 @@ async function removeProvider(ask) {
     const primaryRef = getCurrentModelRef();
     const provider = freshCfg.models?.providers?.[row.id];
     const modelCount = Array.isArray(provider?.models) ? provider.models.length : 0;
-    const isCurrentProvider = typeof primaryRef === 'string' && primaryRef.startsWith(`${row.id}/`);
+    const [primaryProviderId] = splitModelRef(primaryRef);
+    const isCurrentProvider = primaryProviderId.toLowerCase() === row.id.toLowerCase();
 
     section(`删除 ${formatProviderRow(row)}`);
     console.log(`${color('模型数量', C.gray)}  ${color(`${modelCount} 个`, C.yellow, C.bold)}`);
     if (isCurrentProvider) {
-      warn('该 API 当前正被默认模型使用,删除后默认模型可能失效。');
+      danger('该 API 正被当前默认主模型使用,不能直接删除。');
+      info(`当前默认模型:${primaryRef}`);
+      info('请先到 [1] 换模型,切换到其他 Provider 后再回来删除。');
+      await backPrompt(ask);
+      continue;
     }
     const confirm = await ask(color(`确认删除 API ${formatProviderRow(row)}？(y/N): `, C.yellow, C.bold));
     if (confirm.toLowerCase() !== 'y') {
@@ -2511,13 +2516,10 @@ async function removeProvider(ask) {
     const exists = !!latestCfg.models?.providers?.[row.id];
     if (status === 0 && !exists) {
       success('API 删除成功。');
-      if (isCurrentProvider) {
-        warn('原默认模型所属 provider 已删除,请尽快重新选择默认模型。');
-      }
       success('配置已更新。');
     } else {
       danger(`API 删除失败:${row.displayName},请检查配置或重试。`);
-      info('请查看上方报错详情;如果它正被当前默认主模型使用,脚本可能会直接拒绝删除。');
+      info('请查看上方报错详情。');
     }
     await backPrompt(ask);
     continue;
