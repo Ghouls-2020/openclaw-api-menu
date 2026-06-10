@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.72',
+    updatedAt: '2026-06-10',
+    summary: [
+      '修复 npm 最新版本检测失败时可能把 stderr 当成版本号显示的问题。',
+      '只有 npm view 成功且 stdout 是合法版本号时才显示最新版本,否则返回“未知”。',
+    ],
+  },
+  {
     version: 'v0.0.71',
     updatedAt: '2026-06-09',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '普通卸载 OpenClaw 时也会先停止并清理 Gateway systemd user service,避免保留配置但残留坏服务。',
       '彻底卸载和普通卸载共用同一套 service 清理逻辑,缺失 service 的 stop/disable/reset-failed 不再误报整体失败。',
-    ],
-  },
-  {
-    version: 'v0.0.52',
-    updatedAt: '2026-06-07',
-    summary: [
-      '彻底卸载时同步处理 systemd user service:停止、disable、删除 openclaw-gateway.service、daemon-reload 并 reset-failed。',
-      '降级恢复不再使用 systemctl --user set-environment,改为临时 service drop-in 注入环境变量并在重启后清理。',
     ],
   },
 ];
@@ -3216,9 +3216,13 @@ function getLatestOpenClawVersion(force = false) {
   }
   try {
     const res = runCommand('npm', ['view', 'openclaw', 'version'], { timeout: 5000 });
-    const value = (res.stdout || '').trim() || (res.stderr || '').trim() || '未知';
-    menuRuntimeCache.latestVersion = { value, ts: Date.now() };
-    return value;
+    const value = String(res.stdout || '').trim();
+    if (res.status === 0 && /^\d{4}\.\d+\.\d+$/.test(value)) {
+      menuRuntimeCache.latestVersion = { value, ts: Date.now() };
+      return value;
+    }
+    menuRuntimeCache.latestVersion = { value: '未知', ts: Date.now() };
+    return '未知';
   } catch {
     return menuRuntimeCache.latestVersion.value || '未知';
   }
