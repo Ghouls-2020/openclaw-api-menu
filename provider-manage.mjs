@@ -205,7 +205,10 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
   let changed = false;
 
   const isSameProviderRef = (ref) => typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === providerName.toLowerCase();
+  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validRefs.has(ref);
   const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
+  const firstValidFallback = (fallbacks = []) => Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '';
+
   const repairString = (fieldName) => {
     const value = defaults[fieldName];
     if (!isInvalidSyncedRef(value)) return;
@@ -218,21 +221,25 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
     changed = true;
   };
+
   const repairObject = (fieldName) => {
     const value = defaults[fieldName];
     if (!value || typeof value !== 'object') return;
+    let promotedFallback = '';
     if (isInvalidSyncedRef(value.primary)) {
       const old = value.primary;
-      if (fallbackRef) value.primary = fallbackRef;
+      promotedFallback = firstValidFallback(value.fallbacks);
+      const nextPrimary = promotedFallback || fallbackRef;
+      if (nextPrimary) value.primary = nextPrimary;
       else delete value.primary;
-      messages.push(`${fieldName}.primary: ${old}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      messages.push(`${fieldName}.primary: ${old}${nextPrimary ? ` -> ${nextPrimary}` : ' 已清理'}`);
       changed = true;
     }
     if (Array.isArray(value.fallbacks)) {
       const before = value.fallbacks.length;
-      value.fallbacks = value.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      value.fallbacks = value.fallbacks.filter((ref) => ref !== promotedFallback && !isInvalidSyncedRef(ref));
       if (value.fallbacks.length !== before) {
-        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效引用`);
+        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
         changed = true;
       }
     }

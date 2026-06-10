@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.73',
+    updatedAt: '2026-06-11',
+    summary: [
+      '同步模型修复失效 primary 时,优先提升现有仍有效的 fallback。',
+      '只有没有可用 fallback 时才使用 /models 返回的第一个模型兜底,避免默认模型意外切到新列表首项。',
+    ],
+  },
+  {
     version: 'v0.0.72',
     updatedAt: '2026-06-10',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复全部同步全部失败仍提示配置已更新的问题,现在会明确提示未写入配置。',
       '修复 Provider 改名时旧模型引用清理和新引用写入不完整的问题,并优化 ocapi alias、默认模型显示和显示名写入时机。',
-    ],
-  },
-  {
-    version: 'v0.0.53',
-    updatedAt: '2026-06-07',
-    summary: [
-      '普通卸载 OpenClaw 时也会先停止并清理 Gateway systemd user service,避免保留配置但残留坏服务。',
-      '彻底卸载和普通卸载共用同一套 service 清理逻辑,缺失 service 的 stop/disable/reset-failed 不再误报整体失败。',
     ],
   },
 ];
@@ -2146,7 +2146,9 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
   let changed = false;
 
   const isSameProviderRef = (ref) => typeof ref === 'string' && splitModelRef(ref)[0]?.toLowerCase() === providerName.toLowerCase();
+  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validRefs.has(ref);
   const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
+  const firstValidFallback = (fallbacks = []) => Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '';
 
   const repairString = (fieldName) => {
     const value = defaults[fieldName];
@@ -2164,18 +2166,21 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
   const repairObject = (fieldName) => {
     const value = defaults[fieldName];
     if (!value || typeof value !== 'object') return;
+    let promotedFallback = '';
     if (isInvalidSyncedRef(value.primary)) {
       const old = value.primary;
-      if (fallbackRef) value.primary = fallbackRef;
+      promotedFallback = firstValidFallback(value.fallbacks);
+      const nextPrimary = promotedFallback || fallbackRef;
+      if (nextPrimary) value.primary = nextPrimary;
       else delete value.primary;
-      messages.push(`${fieldName}.primary: ${old}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      messages.push(`${fieldName}.primary: ${old}${nextPrimary ? ` -> ${nextPrimary}` : ' 已清理'}`);
       changed = true;
     }
     if (Array.isArray(value.fallbacks)) {
       const before = value.fallbacks.length;
-      value.fallbacks = value.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      value.fallbacks = value.fallbacks.filter((ref) => ref !== promotedFallback && !isInvalidSyncedRef(ref));
       if (value.fallbacks.length !== before) {
-        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效引用`);
+        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
         changed = true;
       }
     }
