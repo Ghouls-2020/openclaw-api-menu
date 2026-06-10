@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.71',
+    updatedAt: '2026-06-09',
+    summary: [
+      '修复删除 Provider 后默认模型类字段可能残留旧 Provider 引用的问题。',
+      '默认选择字段被清空时现在会显式提交 null patch,确保 openclaw.json 真正删除对应字段。',
+    ],
+  },
+  {
     version: 'v0.0.70',
     updatedAt: '2026-06-09',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '彻底卸载时同步处理 systemd user service:停止、disable、删除 openclaw-gateway.service、daemon-reload 并 reset-failed。',
       '降级恢复不再使用 systemctl --user set-environment,改为临时 service drop-in 注入环境变量并在重启后清理。',
-    ],
-  },
-  {
-    version: 'v0.0.51',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复修改/删除 Provider 时默认模型、图片模型、音频模型、视频/音乐模型和 fallbacks 等选择字段可能残留旧 provider 引用的问题。',
-      '增强配置备份文件名唯一性,彻底卸载前先停止 Gateway,查看 API 列表改为并发检测。',
     ],
   },
 ];
@@ -2125,10 +2125,14 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('musicGenerationModel');
 }
 
-function buildDefaultSelectionPatch(defaults = {}) {
+function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
   for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
-    if (Object.prototype.hasOwnProperty.call(defaults, field)) patch[field] = defaults[field];
+    if (Object.prototype.hasOwnProperty.call(defaults, field)) {
+      patch[field] = defaults[field];
+    } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
+      patch[field] = null;
+    }
   }
   return patch;
 }
@@ -2600,7 +2604,7 @@ async function syncAllProviders(ask) {
     }
   }
   if (successCount > 0) {
-    const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {});
+    const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {}, beforeCfg.agents?.defaults || {});
     patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
     const allSyncBackup = createConfigBackup('sync-all-providers');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
@@ -2833,7 +2837,7 @@ async function modifyProvider(ask) {
         patchPayload.agents = { defaults: { models: modelRefPatch } };
       }
       if (providerIdChanged) {
-        patchPayload.agents = { defaults: { ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}), models: modelRefPatch } };
+        patchPayload.agents = { defaults: { ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, readJson(CONFIG, {}).agents?.defaults || {}), models: modelRefPatch } };
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
       const patchRes = applyConfigPatch(patchPayload);

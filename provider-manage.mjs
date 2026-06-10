@@ -184,10 +184,14 @@ function isProviderRef(ref, name) {
   return typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === name.toLowerCase();
 }
 
-function buildDefaultSelectionPatch(defaults = {}) {
+function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
   for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
-    if (Object.prototype.hasOwnProperty.call(defaults, field)) patch[field] = defaults[field];
+    if (Object.prototype.hasOwnProperty.call(defaults, field)) {
+      patch[field] = defaults[field];
+    } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
+      patch[field] = null;
+    }
   }
   return patch;
 }
@@ -377,6 +381,7 @@ if (action === 'remove') {
       process.exit(3);
     }
   }
+  const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
   const backup = maybeCreateConfigBackup();
   delete cfg.models.providers[providerName];
   delete displayNames[providerName];
@@ -398,7 +403,7 @@ if (action === 'remove') {
     },
     agents: {
       defaults: {
-        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}),
+        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, previousDefaults),
         models: modelRefPatch,
       },
     },
@@ -472,6 +477,7 @@ if (action === 'sync') {
     process.exit(5);
   }
   const backup = maybeCreateConfigBackup();
+  const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
   const displayName = getProviderDisplayName(providerName);
   provider.models = ids.map(id => ({
     id,
@@ -505,7 +511,7 @@ if (action === 'sync') {
     },
     agents: {
       defaults: {
-        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}),
+        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, previousDefaults),
         models: modelRefPatch,
       },
     },
