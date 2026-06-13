@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.74',
+    updatedAt: '2026-06-14',
+    summary: [
+      '删除 Provider 时同步支持 fallback 提升逻辑。',
+      'primary 被删后如有剩余 fallback,优先提升第一个 fallback 为新 primary,避免默认模型类字段意外清空。',
+    ],
+  },
+  {
     version: 'v0.0.73',
     updatedAt: '2026-06-11',
     summary: [
@@ -208,14 +216,6 @@ const MENU_VERSION_HISTORY = [
       '新增 API 时校验 provider id,避免斜杠、点号等非法 id 污染模型引用。',
       '新增 API 改为通过 stdin 向辅助脚本传递参数,避免 API Key 出现在进程参数;全部同步改为写入前才创建备份。',
       'provider-manage rename/remove 改为主配置 patch 成功后再写显示名文件。',
-    ],
-  },
-  {
-    version: 'v0.0.54',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复全部同步全部失败仍提示配置已更新的问题,现在会明确提示未写入配置。',
-      '修复 Provider 改名时旧模型引用清理和新引用写入不完整的问题,并优化 ocapi alias、默认模型显示和显示名写入时机。',
     ],
   },
 ];
@@ -2107,9 +2107,14 @@ function pruneModelSelection(config, name) {
       return;
     }
     if (value && typeof value === 'object') {
+      const hadPrimary = !!value.primary;
       if (isProviderRef(value.primary, name)) delete value.primary;
       if (Array.isArray(value.fallbacks)) {
         value.fallbacks = value.fallbacks.filter((ref) => !isProviderRef(ref, name));
+      }
+      if (hadPrimary && !value.primary && Array.isArray(value.fallbacks) && value.fallbacks.length > 0) {
+        value.primary = value.fallbacks[0];
+        value.fallbacks = value.fallbacks.slice(1);
       }
       if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
         delete defaults[fieldName];

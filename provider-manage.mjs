@@ -267,9 +267,14 @@ function pruneModelSelection(config, name) {
       return;
     }
     if (value && typeof value === 'object') {
+      const hadPrimary = !!value.primary;
       if (isProviderRef(value.primary, name)) delete value.primary;
       if (Array.isArray(value.fallbacks)) {
         value.fallbacks = value.fallbacks.filter((ref) => !isProviderRef(ref, name));
+      }
+      if (hadPrimary && !value.primary && Array.isArray(value.fallbacks) && value.fallbacks.length > 0) {
+        value.primary = value.fallbacks[0];
+        value.fallbacks = value.fallbacks.slice(1);
       }
       if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
         delete defaults[fieldName];
