@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.75',
+    updatedAt: '2026-06-14',
+    summary: [
+      '全部同步模型完成后、写入配置前增加"正在写入配置，请稍等..."提示。',
+      '避免用户误以为脚本卡死，实际是在调用 openclaw config patch 验证并写入配置。',
+    ],
+  },
+  {
     version: 'v0.0.74',
     updatedAt: '2026-06-14',
     summary: [
@@ -207,15 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '优化 ocapi 快捷命令提示:检测到已有 alias 时不再重复显示“已存在快捷命令”。',
       '仅在实际新增快捷命令或新增失败时输出相关提示,减少启动时重复刷屏。',
-    ],
-  },
-  {
-    version: 'v0.0.55',
-    updatedAt: '2026-06-07',
-    summary: [
-      '新增 API 时校验 provider id,避免斜杠、点号等非法 id 污染模型引用。',
-      '新增 API 改为通过 stdin 向辅助脚本传递参数,避免 API Key 出现在进程参数;全部同步改为写入前才创建备份。',
-      'provider-manage rename/remove 改为主配置 patch 成功后再写显示名文件。',
     ],
   },
 ];
@@ -2617,6 +2616,7 @@ async function syncAllProviders(ask) {
     const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {}, beforeCfg.agents?.defaults || {});
     patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
     const allSyncBackup = createConfigBackup('sync-all-providers');
+    info('正在写入配置，请稍等...');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
       danger('批量写入配置失败。');
