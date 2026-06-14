@@ -360,6 +360,7 @@ if (action === 'rename') {
       name: `${providerDisplayName} / ${model.id}`,
     }));
   }
+  console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
       providers: {
@@ -407,6 +408,7 @@ if (action === 'remove') {
     }
   }
   pruneModelSelection(cfg, providerName);
+  console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
       providers: {
@@ -515,6 +517,7 @@ if (action === 'sync') {
       if (!wanted.has(key)) removed += 1;
     }
   }
+  console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
       providers: {

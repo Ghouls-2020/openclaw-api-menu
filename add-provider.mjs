@@ -257,6 +257,7 @@ const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
 const modelsPatch = { [`${providerName}/*`]: {} };
 
 const backup = createConfigBackup();
+console.error('正在写入配置，请稍等...');
 const patchRes = runConfigPatch({
   models: {
     providers: {

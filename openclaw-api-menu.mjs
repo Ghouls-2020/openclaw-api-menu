@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.76',
+    updatedAt: '2026-06-14',
+    summary: [
+      '添加、删除、修改、同步 API 写入配置前都增加"正在写入配置，请稍等..."提示。',
+      '统一在所有 config patch 调用前显示进度提示,让用户知道脚本仍在工作。',
+    ],
+  },
+  {
     version: 'v0.0.75',
     updatedAt: '2026-06-14',
     summary: [
@@ -207,14 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '将添加 API 和 Provider 状态检测超时从 3000ms 调整为 8000ms,减少慢接口误判超时。',
       '同步更新辅助脚本的请求超时提示,保持菜单和命令行行为一致。',
-    ],
-  },
-  {
-    version: 'v0.0.56',
-    updatedAt: '2026-06-07',
-    summary: [
-      '优化 ocapi 快捷命令提示:检测到已有 alias 时不再重复显示“已存在快捷命令”。',
-      '仅在实际新增快捷命令或新增失败时输出相关提示,减少启动时重复刷屏。',
     ],
   },
 ];
