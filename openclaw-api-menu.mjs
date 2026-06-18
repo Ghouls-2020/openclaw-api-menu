@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.77',
+    updatedAt: '2026-06-19',
+    summary: [
+      '修复 openclaw.json 损坏或不存在时 getCurrentDefaultModel 读取 cfg.agents 崩溃的问题。',
+      '现在 cfg 为 null 时会友好返回"配置不可用",避免菜单无法启动。',
+    ],
+  },
+  {
     version: 'v0.0.76',
     updatedAt: '2026-06-14',
     summary: [
@@ -207,14 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复全部同步摘要新增/移除统计,改为累加每个 Provider 的实际 added/removed 模型数。',
       '新增 API 前先拒绝重复 provider id;provider-manage 对非法旧 id 和重复显示名增加保护。',
-    ],
-  },
-  {
-    version: 'v0.0.57',
-    updatedAt: '2026-06-07',
-    summary: [
-      '将添加 API 和 Provider 状态检测超时从 3000ms 调整为 8000ms,减少慢接口误判超时。',
-      '同步更新辅助脚本的请求超时提示,保持菜单和命令行行为一致。',
     ],
   },
 ];
@@ -1020,6 +1020,7 @@ function formatProviderRow(row) {
 
 function getCurrentDefaultModel() {
   const cfg = loadWorkspaceState().cfg;
+  if (!cfg) return color('配置不可用', C.red);
   const modelConfig = cfg.agents?.defaults?.model;
   const primary = typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
   if (!primary) return color('未设置', C.gray);
