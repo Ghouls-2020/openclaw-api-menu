@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.78',
+    updatedAt: '2026-06-21',
+    summary: [
+      '修复 provider-manage.mjs 在 provider 找不到时误报“Provider id 非法”的问题。',
+      '现在 resolveProviderKey 返回 null 时先提示“Provider not found”，再对有效 id 做合法性校验。',
+    ],
+  },
+  {
     version: 'v0.0.77',
     updatedAt: '2026-06-19',
     summary: [
@@ -207,14 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '主菜单新增 API 和修改显示名称时增加显示名重复检查,避免后续按显示名解析错 Provider。',
       '显示名冲突检测同时读取 provider-display-names.json 和 provider.models[0].name 推断值;辅助脚本同步增强。',
-    ],
-  },
-  {
-    version: 'v0.0.58',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复全部同步摘要新增/移除统计,改为累加每个 Provider 的实际 added/removed 模型数。',
-      '新增 API 前先拒绝重复 provider id;provider-manage 对非法旧 id 和重复显示名增加保护。',
     ],
   },
 ];

@@ -173,8 +173,12 @@ function refuseInvalidProviderId(name) {
 }
 
 const providerName = resolveProviderKey(providerInput);
-const provider = providerName ? providers[providerName] : null;
-if (providerName) refuseInvalidProviderId(providerName);
+if (!providerName) {
+  console.error(`Provider not found: ${providerInput}`);
+  process.exit(2);
+}
+const provider = providers[providerName];
+refuseInvalidProviderId(providerName);
 
 function refsFor(name) {
   return Object.keys(modelMap).filter(k => k.split('/')[0].toLowerCase() === name.toLowerCase());
