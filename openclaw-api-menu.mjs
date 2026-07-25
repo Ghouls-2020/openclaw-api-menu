@@ -58,6 +58,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.79',
+    updatedAt: '2026-07-25',
+    summary: [
+      '统一 loadWorkspaceState().cfg 的空配置防护，新增 getWorkspaceCfg()。',
+      '换模型/查看状态/常用模型等路径在 openclaw.json 损坏时友好降级，不再直接崩溃。',
+    ],
+  },
+  {
     version: 'v0.0.78',
     updatedAt: '2026-06-21',
     summary: [
@@ -207,14 +215,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复 provider-manage 单独同步时显示名回退逻辑,支持从 provider.models[0].name 推断中文显示名并按推断名解析。',
       '同步模型后自动修复指向已移除模型的默认选择引用;修正 Gateway 检查提示菜单编号为 [19]。',
-    ],
-  },
-  {
-    version: 'v0.0.59',
-    updatedAt: '2026-06-07',
-    summary: [
-      '主菜单新增 API 和修改显示名称时增加显示名重复检查,避免后续按显示名解析错 Provider。',
-      '显示名冲突检测同时读取 provider-display-names.json 和 provider.models[0].name 推断值;辅助脚本同步增强。',
     ],
   },
 ];
@@ -702,13 +702,16 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
 function formatSessionModelLabel(entry = {}) {
   const providerId = entry.providerOverride || entry.modelProvider || '';
   const model = entry.modelOverride || entry.model || '';
+  const cfg = getWorkspaceCfg();
+  if (!cfg) {
+    if (providerId && model) return `${providerId} / ${model}`;
+    return '配置不可用';
+  }
   if (providerId && model) {
-    const cfg = loadWorkspaceState().cfg;
     const provider = cfg.models?.providers?.[providerId];
     const displayName = getProviderLabel(providerId, provider);
     return `${formatProviderDisplay(displayName, providerId)} / ${model}`;
   }
-  const cfg = loadWorkspaceState().cfg;
   const modelConfig = cfg.agents?.defaults?.model;
   const primary = typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
   if (!primary) return '未设置';
@@ -933,7 +936,8 @@ async function confirmSyncTelegramSessions(ask, ref) {
 function formatModelRefForHumans(ref) {
   const [providerId, modelId] = splitModelRef(ref);
   if (!providerId || !modelId) return String(ref || '该模型');
-  const cfg = loadWorkspaceState().cfg;
+  const cfg = getWorkspaceCfg();
+  if (!cfg) return `${providerId} / ${modelId}`;
   const provider = cfg.models?.providers?.[providerId];
   const displayName = getProviderLabel(providerId, provider);
   return `${formatProviderDisplay(displayName, providerId)} / ${modelId}`;
@@ -1019,7 +1023,7 @@ function formatProviderRow(row) {
 }
 
 function getCurrentDefaultModel() {
-  const cfg = loadWorkspaceState().cfg;
+  const cfg = getWorkspaceCfg();
   if (!cfg) return color('配置不可用', C.red);
   const modelConfig = cfg.agents?.defaults?.model;
   const primary = typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
@@ -1224,6 +1228,13 @@ function loadWorkspaceState(options = {}) {
     reason: null,
     hint: null,
   };
+}
+
+function getWorkspaceCfg(options = {}) {
+  const state = loadWorkspaceState(options);
+  if (!state.ok) return null;
+  if (!state.cfg || typeof state.cfg !== 'object' || Array.isArray(state.cfg)) return null;
+  return state.cfg;
 }
 
 function backupConfig(tag = 'manual') {
@@ -1448,7 +1459,8 @@ async function detectProviderStatus(provider) {
 }
 
 function getCurrentModelRef() {
-  const cfg = loadWorkspaceState().cfg;
+  const cfg = getWorkspaceCfg();
+  if (!cfg) return '';
   const modelConfig = cfg.agents?.defaults?.model;
   return typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
 }
@@ -1481,7 +1493,8 @@ function summarizeErrorMessage(message, maxLen = 120) {
 }
 
 function seedRecentModelsFromCurrentDefault() {
-  const cfg = loadWorkspaceState().cfg;
+  const cfg = getWorkspaceCfg();
+  if (!cfg) return false;
   const currentRef = getCurrentModelRef();
   if (!currentRef) return false;
   const [providerId, modelId] = splitModelRef(currentRef);
@@ -1934,8 +1947,9 @@ function formatProviderStatusForProviderList(status, options = {}) {
 
 function providersState() {
   const state = loadWorkspaceState();
-  const cfg = state.cfg;
-  const displayNames = state.displayNames;
+  const cfg = state.cfg && typeof state.cfg === 'object' && !Array.isArray(state.cfg) ? state.cfg : null;
+  if (!cfg) return [];
+  const displayNames = state.displayNames || {};
   const providers = cfg.models?.providers || {};
   const modelConfig = cfg.agents?.defaults?.model;
   const primary = typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
@@ -2477,7 +2491,7 @@ async function addProvider(ask) {
   }
   const addPayload = JSON.stringify({ providerName, providerDisplayName: displayName, baseUrl, apiKey });
   const result = { code: runNode(helperPath, ['--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
-  const freshCfg = loadWorkspaceState().cfg;
+  const freshCfg = getWorkspaceCfg() || {};
   const exists = !!freshCfg.models?.providers?.[providerName];
   if (exists && result.code === 0) {
     success('API 添加成功,模型同步完成。');
