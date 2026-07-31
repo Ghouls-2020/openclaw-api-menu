@@ -37,6 +37,10 @@ const MENU_BACKUP_KEEP_MAX = 20;
 const CONFIG_BACKUP_KEEP_MAX = 20;
 const modelStatusCache = new Map();
 // 维护规矩:
+// 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 4个脚本 → push main → push tag(同名版本号)。
+//    GitHub Repo: github.com/Ghouls-2020/openclaw-api-menu
+//    脚本文件(4个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs / list-providers-cn.mjs
+//    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
 // 1. 每次修改本脚本前,必须先创建一个备份到 openclaw-api-menu-backups/ 文件夹,命名格式:openclaw-api-menu.mjs-Vx.y.z
 // 2. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
 // 3. 修改涉及界面输出时,先检查实际显示效果,避免重复分隔线、重复选项或错位
@@ -57,6 +61,13 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.81',
+    updatedAt: '2026-07-31',
+    summary: [
+      '在维护规矩中新增第0条发布规则，VPS重装后也能知道完整发布流程。',
+    ],
+  },
   {
     version: 'v0.0.80',
     updatedAt: '2026-07-31',
