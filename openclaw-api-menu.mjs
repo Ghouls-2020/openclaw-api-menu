@@ -41,6 +41,10 @@ const modelStatusCache = new Map();
 //    GitHub Repo: github.com/Ghouls-2020/openclaw-api-menu
 //    脚本文件(4个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs / list-providers-cn.mjs
 //    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
+//    SSH Deploy Key:若VPS重装,需重新配置:\n//      a) ssh-keygen -t ed25519 -C "openclaw-api-menu" -f ~/.ssh/id_ed25519-openclaw-api-menu -N ""
+//      b) cat ~/.ssh/id_ed25519-openclaw-api-menu.pub → 加到 GitHub Repo Settings→Deploy keys(勾Allow write access)
+//      c) ~/.ssh/config 添加:\n//         Host github-openclaw-api-menu\n//           HostName github.com\n//           User git\n//           IdentityFile ~/.ssh/id_ed25519-openclaw-api-menu
+//      d) git clone git@github-openclaw-api-menu:Ghouls-2020/openclaw-api-menu.git 验证连通性
 // 1. 每次修改本脚本前,必须先创建一个备份到 openclaw-api-menu-backups/ 文件夹,命名格式:openclaw-api-menu.mjs-Vx.y.z
 // 2. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
 // 3. 修改涉及界面输出时,先检查实际显示效果,避免重复分隔线、重复选项或错位
@@ -61,6 +65,13 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.82',
+    updatedAt: '2026-07-31',
+    summary: [
+      '在维护规矩中补充 SSH Deploy Key 配置步骤，VPS 重装后可自助恢复。',
+    ],
+  },
   {
     version: 'v0.0.81',
     updatedAt: '2026-07-31',
