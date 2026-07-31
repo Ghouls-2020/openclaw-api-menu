@@ -58,6 +58,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.80',
+    updatedAt: '2026-07-31',
+    summary: [
+      '取消 atomicWriteJsonFile 和 writeJson 的原子写入机制，改为直接 writeFileSync。',
+    ],
+  },
+  {
     version: 'v0.0.79',
     updatedAt: '2026-07-25',
     summary: [
@@ -1103,9 +1110,7 @@ function cloneFallback(fallback) {
 function atomicWriteJsonFile(file, data) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 }
 
 function ensureJsonFile(file, fallback, options = {}) {
@@ -1147,9 +1152,7 @@ function ensureJsonFile(file, fallback, options = {}) {
 function writeJson(file, data) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
-  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
 }
 
 function applyConfigPatch(patch, options = {}) {
