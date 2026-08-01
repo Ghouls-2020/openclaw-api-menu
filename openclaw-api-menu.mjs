@@ -34,17 +34,13 @@ const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
 const GATEWAY_RESTART_CHECK_MAX_ATTEMPTS = 20;
 const VERSION_HISTORY_VISIBLE_COUNT = 20;
 const MENU_BACKUP_KEEP_MAX = 20;
-const CONFIG_BACKUP_KEEP_MAX = 20;
 const modelStatusCache = new Map();
 // 维护规矩:
 // 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 4个脚本 → push main → push tag(同名版本号)。
 //    GitHub Repo: github.com/Ghouls-2020/openclaw-api-menu
 //    脚本文件(4个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs / list-providers-cn.mjs
 //    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
-//    SSH Deploy Key:若VPS重装,需重新配置:\n//      a) ssh-keygen -t ed25519 -C "openclaw-api-menu" -f ~/.ssh/id_ed25519-openclaw-api-menu -N ""
-//      b) cat ~/.ssh/id_ed25519-openclaw-api-menu.pub → 加到 GitHub Repo Settings→Deploy keys(勾Allow write access)
-//      c) ~/.ssh/config 添加:\n//         Host github-openclaw-api-menu\n//           HostName github.com\n//           User git\n//           IdentityFile ~/.ssh/id_ed25519-openclaw-api-menu
-//      d) git clone git@github-openclaw-api-menu:Ghouls-2020/openclaw-api-menu.git 验证连通性
+//    SSH Deploy Key:若VPS重装,需重新配置 ~/.ssh/config 中的 github-openclaw-api-menu 别名。
 // 1. 每次修改本脚本前,必须先创建一个备份到 openclaw-api-menu-backups/ 文件夹,命名格式:openclaw-api-menu.mjs-Vx.y.z
 // 2. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
 // 3. 修改涉及界面输出时,先检查实际显示效果,避免重复分隔线、重复选项或错位
@@ -66,24 +62,19 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.82',
-    updatedAt: '2026-07-31',
+    version: 'v0.0.83',
+    updatedAt: '2026-08-02',
     summary: [
-      '在维护规矩中补充 SSH Deploy Key 配置步骤，VPS 重装后可自助恢复。',
-    ],
-  },
-  {
-    version: 'v0.0.81',
-    updatedAt: '2026-07-31',
-    summary: [
-      '在维护规矩中新增第0条发布规则，VPS重装后也能知道完整发布流程。',
+      '恢复仓库根目录的 4 个独立脚本，并保留取消 openclaw.json 自动备份的修改。',
+      '补充 VPS 重装后的 GitHub SSH 发布规则。',
     ],
   },
   {
     version: 'v0.0.80',
-    updatedAt: '2026-07-31',
+    updatedAt: '2026-08-02',
     summary: [
-      '取消 atomicWriteJsonFile 和 writeJson 的原子写入机制，改为直接 writeFileSync。',
+      '取消菜单修改 openclaw.json 前的自动备份，配置现在直接写入。',
+      '添加、删除、修改、同步 API、切换默认模型及升级 OpenClaw 均不再生成 openclaw.json-* 备份。',
     ],
   },
   {
@@ -236,14 +227,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复主菜单全部同步后默认模型仍可能指向已移除模型的问题。',
       '全部同步现在会同步修复 model/imageModel/pdfModel/audioModel/videoGenerationModel/musicGenerationModel 的失效 primary/fallbacks 引用。',
-    ],
-  },
-  {
-    version: 'v0.0.60',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复 provider-manage 单独同步时显示名回退逻辑,支持从 provider.models[0].name 推断中文显示名并按推断名解析。',
-      '同步模型后自动修复指向已移除模型的默认选择引用;修正 Gateway 检查提示菜单编号为 [19]。',
     ],
   },
 ];
@@ -434,45 +417,6 @@ function cleanupMenuBackups() {
       fs.unlinkSync(item.fullPath);
     } catch {}
   }
-}
-
-function formatBackupTimestamp(date = new Date()) {
-  const pad = (n, width = 2) => String(n).padStart(width, '0');
-  const year = String(date.getFullYear()).slice(-2);
-  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-}
-
-function cleanupConfigBackups() {
-  const dir = path.dirname(CONFIG);
-  const base = path.basename(CONFIG);
-  let entries = [];
-  try {
-    entries = fs.readdirSync(dir)
-      .filter((name) => name.startsWith(`${base}-`))
-      .map((name) => {
-        const fullPath = path.join(dir, name);
-        let mtimeMs = 0;
-        try {
-          mtimeMs = fs.statSync(fullPath).mtimeMs;
-        } catch {}
-        return { fullPath, mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  } catch {
-    return;
-  }
-  for (const item of entries.slice(CONFIG_BACKUP_KEEP_MAX)) {
-    try {
-      fs.unlinkSync(item.fullPath);
-    } catch {}
-  }
-}
-
-function createConfigBackup(tag = 'manual') {
-  const backupPath = `${CONFIG}-${formatBackupTimestamp()}`;
-  fs.copyFileSync(CONFIG, backupPath, fs.constants.COPYFILE_EXCL);
-  cleanupConfigBackups();
-  return backupPath;
 }
 
 function parseMenuVersion(version) {
@@ -1132,7 +1076,9 @@ function cloneFallback(fallback) {
 function atomicWriteJsonFile(file, data) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
 }
 
 function ensureJsonFile(file, fallback, options = {}) {
@@ -1174,7 +1120,9 @@ function ensureJsonFile(file, fallback, options = {}) {
 function writeJson(file, data) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+  const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  fs.renameSync(tmp, file);
 }
 
 function applyConfigPatch(patch, options = {}) {
@@ -1260,10 +1208,6 @@ function getWorkspaceCfg(options = {}) {
   if (!state.ok) return null;
   if (!state.cfg || typeof state.cfg !== 'object' || Array.isArray(state.cfg)) return null;
   return state.cfg;
-}
-
-function backupConfig(tag = 'manual') {
-  return createConfigBackup(tag);
 }
 
 function getWorkspaceSkillsDir() {
@@ -2453,7 +2397,6 @@ async function switchDefaultModel(ask) {
           if (!fresh.agents.defaults.model) fresh.agents.defaults.model = {};
           fresh.agents.defaults.model.primary = ref;
         }
-        createConfigBackup('switch-model');
         const patchRes = applyConfigPatch({
           agents: { defaults: { model: { primary: ref } } },
         });
@@ -2515,7 +2458,7 @@ async function addProvider(ask) {
     return;
   }
   const addPayload = JSON.stringify({ providerName, providerDisplayName: displayName, baseUrl, apiKey });
-  const result = { code: runNode(helperPath, ['--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
+  const result = { code: runNode(helperPath, ['--no-backup', '--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
   const freshCfg = getWorkspaceCfg() || {};
   const exists = !!freshCfg.models?.providers?.[providerName];
   if (exists && result.code === 0) {
@@ -2564,7 +2507,7 @@ async function removeProvider(ask) {
       await backPrompt(ask);
       continue;
     }
-    const status = runNode(helperPath, ['remove', row.id], { label: 'provider-manage.mjs' });
+    const status = runNode(helperPath, ['--no-backup', 'remove', row.id], { label: 'provider-manage.mjs' });
     const latestCfg = readJson(CONFIG, {});
     const exists = !!latestCfg.models?.providers?.[row.id];
     if (status === 0 && !exists) {
@@ -2655,7 +2598,6 @@ async function syncAllProviders(ask) {
   if (successCount > 0) {
     const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {}, beforeCfg.agents?.defaults || {});
     patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
-    const allSyncBackup = createConfigBackup('sync-all-providers');
     info('正在写入配置，请稍等...');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
@@ -2731,7 +2673,7 @@ async function syncProvider(ask) {
       await backPrompt(ask);
       continue;
     }
-    const status = runNode(helperPath, ['sync', row.id], { label: 'provider-manage.mjs' });
+    const status = runNode(helperPath, ['--no-backup', 'sync', row.id], { label: 'provider-manage.mjs' });
     if (status === 0) {
       const afterCfg = readJson(CONFIG, {});
       const afterCount = Array.isArray(afterCfg.models?.providers?.[row.id]?.models) ? afterCfg.models.providers[row.id].models.length : 0;
@@ -2840,7 +2782,6 @@ async function modifyProvider(ask) {
         }
       }
 
-      const backup = createConfigBackup(`modify-${row.id}`);
       const originalModelRefs = { ...(cfg.agents?.defaults?.models || {}) };
 
       if (providerIdChanged) {
@@ -2911,7 +2852,7 @@ async function modifyProvider(ask) {
         if (!fs.existsSync(helperPath)) {
           warn('缺少外部脚本:provider-manage.mjs，已跳过自动同步。');
         } else {
-          const syncStatus = runNode(helperPath, ['sync', row.id], { label: 'provider-manage.mjs' });
+          const syncStatus = runNode(helperPath, ['--no-backup', 'sync', row.id], { label: 'provider-manage.mjs' });
           const afterCfg = readJson(CONFIG, {});
           const afterIds = getProviderModelIds(afterCfg, row.id);
           const { added, removed } = formatModelDelta(beforeIds, afterIds);
@@ -3105,7 +3046,6 @@ async function quickSwitchFavorite(ask) {
         if (!fresh.agents.defaults.model) fresh.agents.defaults.model = {};
         fresh.agents.defaults.model.primary = selected.ref;
       }
-      createConfigBackup('recent-switch');
       const patchRes = applyConfigPatch({
         agents: { defaults: { model: { primary: selected.ref } } },
       });
@@ -3239,7 +3179,6 @@ async function searchModelsGlobally(ask) {
           if (!fresh.agents.defaults.model) fresh.agents.defaults.model = {};
           fresh.agents.defaults.model.primary = selected.ref;
         }
-        createConfigBackup('search-switch');
         const patchRes = applyConfigPatch({
           agents: { defaults: { model: { primary: selected.ref } } },
         });
@@ -3600,12 +3539,6 @@ async function upgradeOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
-  try {
-    backupConfig('pre-update');
-    info('已自动备份当前配置。');
-  } catch (err) {
-    warn(`升级前自动备份失败:${err.message}`);
-  }
   info('正在执行官方更新流程:openclaw update');
   const res = runCommand('openclaw', ['update'], { stdio: 'inherit' });
   const combinedUpdateOutput = `${res.stdout || ''}${res.stderr || ''}`;
@@ -3825,13 +3758,6 @@ async function installSpecificOpenClawVersion(ask) {
     await backPrompt(ask);
     return;
   }
-  try {
-    backupConfig('pre-version-install');
-    info('已自动备份当前配置。');
-  } catch (err) {
-    warn(`安装/回退前自动备份失败:${err.message}`);
-  }
-
   const lines = [];
   if (isDowngrade) {
     info('检测到是降级操作,先停止 Gateway 以避免旧版本 binary 直接接管新配置。');
