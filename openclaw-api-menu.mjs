@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.86',
+    updatedAt: '2026-08-03',
+    summary: [
+      '修复 ensureOcapiShortcut 单引号转义写错会破坏用户 ~/.zshrc 的问题。',
+      '路径含撇号时不再产生不闭合的引号导致 shell 解析中断。',
+    ],
+  },
+  {
     version: 'v0.0.85',
     updatedAt: '2026-08-02',
     summary: [
@@ -346,7 +354,7 @@ function runCommand(cmd, args = [], options = {}) {
 function ensureOcapiShortcut(options = {}) {
   const { verbose = false } = options;
   if (process.platform === 'win32') return { changed: false, skipped: true, reason: 'Windows 暂不自动写入 shell alias' };
-  const escapeShellSingle = (value) => String(value).replace(/'/g, `'\''`);
+  const escapeShellSingle = (value) => String(value).replace(/'/g, "'\\''");
   const aliasLine = `alias ocapi='${escapeShellSingle(process.execPath)} ${escapeShellSingle(__filename)}'`;
   const shellName = path.basename(process.env.SHELL || '').toLowerCase();
   const candidates = [];
