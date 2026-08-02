@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.85',
+    updatedAt: '2026-08-02',
+    summary: [
+      '修复 pruneDisplayNameMap 在配置读取出错时误清空所有中文显示名的问题。',
+      'openclaw.json 损坏/不存在时不再清空 provider-display-names.json。',
+    ],
+  },
+  {
     version: 'v0.0.84',
     updatedAt: '2026-08-02',
     summary: [
@@ -370,7 +378,8 @@ function ensureOcapiShortcut(options = {}) {
 
 function pruneDisplayNameMap(options = {}) {
   const { verbose = false } = options;
-  const cfg = readJson(CONFIG, {});
+  const cfg = readJson(CONFIG, null);
+  if (!cfg || typeof cfg !== 'object') return 0;
   const providers = cfg.models?.providers || {};
   const displayNames = ensureJsonFile(DISPLAY_NAMES, {}, { label: 'provider-display-names.json', verbose: false });
   const beforeKeys = Object.keys(displayNames);
