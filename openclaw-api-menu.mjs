@@ -17,7 +17,7 @@ const LOCAL_MENU_CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw-api-men
 const TELEGRAM_BOT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
-const STATUS_CACHE_TTL_MS = 60 * 1000; // 缓存从30秒改成1分钟,减少重复检测
+const STATUS_CACHE_TTL_MS = 30 * 1000; // Provider状态缓存30秒,平衡检测频率和用户体验
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 8000;
@@ -61,6 +61,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.84',
+    updatedAt: '2026-08-02',
+    summary: [
+      '优化 Provider 状态缓存时间从 60 秒降至 30 秒。',
+      '用户修复 API Key 后能更快看到最新状态，平衡检测频率和体验。',
+    ],
+  },
   {
     version: 'v0.0.83',
     updatedAt: '2026-08-02',
