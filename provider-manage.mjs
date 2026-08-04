@@ -6,9 +6,7 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 
 const rawArgs = process.argv.slice(2);
-const noBackup = rawArgs.includes('--no-backup');
-const args = rawArgs.filter((arg) => arg !== '--no-backup');
-const [action, providerInput, providerDisplayName] = args;
+const [action, providerInput, providerDisplayName] = rawArgs;
 if (!action || !providerInput || !['check','sync','remove','rename'].includes(action)) {
   console.error('Usage: node provider-manage.mjs <check|sync|remove|rename> <providerNameOrDisplayName> [providerDisplayName]');
   process.exit(1);
@@ -18,7 +16,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 8000;
-const CONFIG_BACKUP_KEEP_MAX = 20;
 if (!fs.existsSync(CONFIG)) {
   console.error(`OpenClaw config not found: ${CONFIG}`);
   process.exit(1);
@@ -80,49 +77,6 @@ function runConfigPatch(patch, extraArgs = []) {
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
   });
-}
-
-function formatBackupTimestamp(date = new Date()) {
-  const pad = (n, width = 2) => String(n).padStart(width, '0');
-  const year = String(date.getFullYear()).slice(-2);
-  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-}
-
-function cleanupConfigBackups() {
-  const dir = path.dirname(CONFIG);
-  const base = path.basename(CONFIG);
-  let entries = [];
-  try {
-    entries = fs.readdirSync(dir)
-      .filter((name) => name.startsWith(`${base}-`))
-      .map((name) => {
-        const fullPath = path.join(dir, name);
-        let mtimeMs = 0;
-        try {
-          mtimeMs = fs.statSync(fullPath).mtimeMs;
-        } catch {}
-        return { fullPath, mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  } catch {
-    return;
-  }
-  for (const item of entries.slice(CONFIG_BACKUP_KEEP_MAX)) {
-    try {
-      fs.unlinkSync(item.fullPath);
-    } catch {}
-  }
-}
-
-function createConfigBackup(tag = 'manual') {
-  const backup = `${CONFIG}-${formatBackupTimestamp()}`;
-  fs.copyFileSync(CONFIG, backup, fs.constants.COPYFILE_EXCL);
-  cleanupConfigBackups();
-  return backup;
-}
-
-function maybeCreateConfigBackup() {
-  return noBackup ? null : createConfigBackup();
 }
 
 const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
@@ -352,7 +306,6 @@ if (action === 'rename') {
     console.error(`Display name already exists: ${providerDisplayName} (${conflict.id})`);
     process.exit(3);
   }
-  const backup = maybeCreateConfigBackup();
   displayNames[providerName] = providerDisplayName;
   if (Array.isArray(provider.models)) {
     provider.models = provider.models.map((model) => ({
@@ -376,7 +329,6 @@ if (action === 'rename') {
   }
   writeJson(DISPLAY_NAMES, displayNames);
   console.log(`Renamed provider display: ${providerName} -> ${providerDisplayName}`);
-  if (backup) console.log(`Backup: ${backup}`);
   process.exit(0);
 }
 
@@ -395,7 +347,6 @@ if (action === 'remove') {
     }
   }
   const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
-  const backup = maybeCreateConfigBackup();
   delete cfg.models.providers[providerName];
   delete displayNames[providerName];
   let removed = 0;
@@ -431,7 +382,6 @@ if (action === 'remove') {
   writeJson(DISPLAY_NAMES, displayNames);
   console.log(`Removed provider: ${providerName}`);
   console.log(`Removed refs: ${removed}`);
-  if (backup) console.log(`Backup: ${backup}`);
   process.exit(0);
 }
 
@@ -490,7 +440,6 @@ if (action === 'sync') {
     console.error('No model IDs found in /models response');
     process.exit(5);
   }
-  const backup = maybeCreateConfigBackup();
   const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
   const displayName = getProviderDisplayName(providerName);
   provider.models = ids.map(id => ({
@@ -546,5 +495,4 @@ if (action === 'sync') {
     console.log('Repaired default model refs:');
     for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
   }
-  if (backup) console.log(`Backup: ${backup}`);
 }

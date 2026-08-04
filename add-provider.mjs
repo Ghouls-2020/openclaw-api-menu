@@ -9,13 +9,10 @@ const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
 const DISPLAY_NAMES = path.join(SCRIPT_DIR, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 8000;
-const CONFIG_BACKUP_KEEP_MAX = 20;
 
 const rawArgs = process.argv.slice(2);
-const noBackup = rawArgs.includes('--no-backup');
-const args = rawArgs.filter((arg) => arg !== '--no-backup');
 let providerName, providerDisplayName, baseUrlRaw, apiKey;
-if (args[0] === '--stdin') {
+if (rawArgs[0] === '--stdin') {
   try {
     const payload = JSON.parse(fs.readFileSync(0, 'utf8') || '{}');
     providerName = payload.providerName;
@@ -26,10 +23,10 @@ if (args[0] === '--stdin') {
     console.error(`Failed to read stdin payload: ${err.message}`);
     process.exit(1);
   }
-} else if (args.length >= 4) {
-  [providerName, providerDisplayName, baseUrlRaw, apiKey] = args;
+} else if (rawArgs.length >= 4) {
+  [providerName, providerDisplayName, baseUrlRaw, apiKey] = rawArgs;
 } else {
-  [providerName, baseUrlRaw, apiKey] = args;
+  [providerName, baseUrlRaw, apiKey] = rawArgs;
   providerDisplayName = providerName;
 }
 if (!providerName || !baseUrlRaw || !apiKey) {
@@ -113,45 +110,6 @@ function runConfigPatch(patch) {
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
   });
-}
-
-function formatBackupTimestamp(date = new Date()) {
-  const pad = (n, width = 2) => String(n).padStart(width, '0');
-  const year = String(date.getFullYear()).slice(-2);
-  return `${year}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
-}
-
-function cleanupConfigBackups() {
-  const dir = path.dirname(CONFIG);
-  const base = path.basename(CONFIG);
-  let entries = [];
-  try {
-    entries = fs.readdirSync(dir)
-      .filter((name) => name.startsWith(`${base}-`))
-      .map((name) => {
-        const fullPath = path.join(dir, name);
-        let mtimeMs = 0;
-        try {
-          mtimeMs = fs.statSync(fullPath).mtimeMs;
-        } catch {}
-        return { fullPath, mtimeMs };
-      })
-      .sort((a, b) => b.mtimeMs - a.mtimeMs);
-  } catch {
-    return;
-  }
-  for (const item of entries.slice(CONFIG_BACKUP_KEEP_MAX)) {
-    try {
-      fs.unlinkSync(item.fullPath);
-    } catch {}
-  }
-}
-
-function createConfigBackup(tag = 'manual') {
-  const backup = `${CONFIG}-${formatBackupTimestamp()}`;
-  fs.copyFileSync(CONFIG, backup, fs.constants.COPYFILE_EXCL);
-  cleanupConfigBackups();
-  return backup;
 }
 
 function guessInputCaps(id) {
@@ -258,7 +216,6 @@ if (!ids.length) {
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
 const modelsPatch = { [`${providerName}/*`]: {} };
 
-const backup = noBackup ? null : createConfigBackup();
 console.error('正在写入配置，请稍等...');
 const patchRes = runConfigPatch({
   models: {
@@ -292,6 +249,5 @@ console.log(`Display name: ${providerDisplayName}`);
 console.log(`Config: ${CONFIG}`);
 console.log(`Base URL: ${baseUrl}`);
 console.log(`Models fetched: ${ids.length}`);
-if (backup) console.log(`Backup: ${backup}`);
 console.log('Sample models:');
 for (const id of ids.slice(0, 20)) console.log(`- ${providerName}/${id}`);

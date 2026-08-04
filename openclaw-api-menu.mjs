@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.87',
+    updatedAt: '2026-08-04',
+    summary: [
+      '取消 add-provider.mjs 与 provider-manage.mjs 对 openclaw.json 的自动备份。',
+      '清理主菜单与辅助脚本残留的 --no-backup 兼容参数，统一改为始终直接写配置。',
+    ],
+  },
+  {
     version: 'v0.0.86',
     updatedAt: '2026-08-03',
     summary: [
@@ -211,46 +219,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '调整 Provider 连通状态文案,正常连通时显示“在线”而不是“可用”。',
       '常用模型菜单中 Provider 状态和模型测活结果分开显示,避免“可用 | 可用”混淆。',
-    ],
-  },
-  {
-    version: 'v0.0.65',
-    updatedAt: '2026-06-08',
-    summary: [
-      'API 状态异常时补充 HTTP 状态码中文原因,例如 403 权限不足、502 上游网关异常。',
-      'Provider 列表继续保持原因放在最后,方便快速判断异常类型。',
-    ],
-  },
-  {
-    version: 'v0.0.64',
-    updatedAt: '2026-06-08',
-    summary: [
-      '调整 API 异常状态文案,将“可达但异常”显示为“可用但异常”。',
-      '异常状态先显示延迟,再把 HTTP 状态码等原因放到最后。',
-    ],
-  },
-  {
-    version: 'v0.0.63',
-    updatedAt: '2026-06-08',
-    summary: [
-      '优化 API 状态检测展示,将 Provider 状态区分为可用、可达但异常、离线三档。',
-      'HTTP 401/403/404/429/5xx 不再显示为在线,避免把地址可达误判为模型可用。',
-    ],
-  },
-  {
-    version: 'v0.0.62',
-    updatedAt: '2026-06-07',
-    summary: [
-      '调整 openclaw.json 备份文件名格式,去掉毫秒和 manual/操作标签后缀。',
-      '备份现在统一生成 openclaw.json-YYMMDD-HHMMSS 形式,辅助脚本同步保持一致。',
-    ],
-  },
-  {
-    version: 'v0.0.61',
-    updatedAt: '2026-06-07',
-    summary: [
-      '修复主菜单全部同步后默认模型仍可能指向已移除模型的问题。',
-      '全部同步现在会同步修复 model/imageModel/pdfModel/audioModel/videoGenerationModel/musicGenerationModel 的失效 primary/fallbacks 引用。',
     ],
   },
 ];
@@ -2483,7 +2451,7 @@ async function addProvider(ask) {
     return;
   }
   const addPayload = JSON.stringify({ providerName, providerDisplayName: displayName, baseUrl, apiKey });
-  const result = { code: runNode(helperPath, ['--no-backup', '--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
+  const result = { code: runNode(helperPath, ['--stdin'], { retry: true, label: 'add-provider.mjs', input: addPayload }) };
   const freshCfg = getWorkspaceCfg() || {};
   const exists = !!freshCfg.models?.providers?.[providerName];
   if (exists && result.code === 0) {
@@ -2532,7 +2500,7 @@ async function removeProvider(ask) {
       await backPrompt(ask);
       continue;
     }
-    const status = runNode(helperPath, ['--no-backup', 'remove', row.id], { label: 'provider-manage.mjs' });
+    const status = runNode(helperPath, ['remove', row.id], { label: 'provider-manage.mjs' });
     const latestCfg = readJson(CONFIG, {});
     const exists = !!latestCfg.models?.providers?.[row.id];
     if (status === 0 && !exists) {
@@ -2698,7 +2666,7 @@ async function syncProvider(ask) {
       await backPrompt(ask);
       continue;
     }
-    const status = runNode(helperPath, ['--no-backup', 'sync', row.id], { label: 'provider-manage.mjs' });
+    const status = runNode(helperPath, ['sync', row.id], { label: 'provider-manage.mjs' });
     if (status === 0) {
       const afterCfg = readJson(CONFIG, {});
       const afterCount = Array.isArray(afterCfg.models?.providers?.[row.id]?.models) ? afterCfg.models.providers[row.id].models.length : 0;
@@ -2877,7 +2845,7 @@ async function modifyProvider(ask) {
         if (!fs.existsSync(helperPath)) {
           warn('缺少外部脚本:provider-manage.mjs，已跳过自动同步。');
         } else {
-          const syncStatus = runNode(helperPath, ['--no-backup', 'sync', row.id], { label: 'provider-manage.mjs' });
+          const syncStatus = runNode(helperPath, ['sync', row.id], { label: 'provider-manage.mjs' });
           const afterCfg = readJson(CONFIG, {});
           const afterIds = getProviderModelIds(afterCfg, row.id);
           const { added, removed } = formatModelDelta(beforeIds, afterIds);
