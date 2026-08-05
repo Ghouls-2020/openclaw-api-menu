@@ -62,6 +62,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.88',
+    updatedAt: '2026-08-05',
+    summary: [
+      '修复 add-provider / list-providers-cn / provider-manage 共 16 个逻辑 bug。',
+      '最严重：provider-manage sync 模型引用 key 拼错导致同步功能实际不工作。',
+      '统一 modelsUrl 拼接规则(不再被 query/fragment 污染)、JSON.parse 加顶层保护、displayNames 加类型校验。',
+    ],
+  },
+  {
     version: 'v0.0.87',
     updatedAt: '2026-08-04',
     summary: [

@@ -20,6 +20,7 @@ const C = {
   blue: '\x1b[34m',
   magenta: '\x1b[35m',
   gray: '\x1b[90m',
+  white: '\x1b[97m',
 };
 
 const color = (s, ...styles) => styles.join('') + s + C.reset;
@@ -101,7 +102,11 @@ async function detectProviderStatus(provider) {
     return { online: false, latency: null, error: '未配置baseUrl或apiKey' };
   }
   const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
-  const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+  const modelsUrl = (() => {
+    const u = new URL(baseUrl);
+    const cleanPath = u.pathname.replace(/\/+$/, '');
+    return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+  })();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), PROVIDER_STATUS_TIMEOUT_MS);
   const start = Date.now();
@@ -140,7 +145,7 @@ const displayNames = readJson(DISPLAY_NAMES, {});
 const modelConfig = cfg.agents?.defaults?.model;
 const primary = (typeof modelConfig === 'string' ? modelConfig : modelConfig?.primary) || '<none>';
 let primaryDisplay = primary;
-if (primary !== '<none>' && primary.includes('/')) {
+if (typeof primary === 'string' && primary !== '<none>' && primary.includes('/')) {
   const firstSlash = primary.indexOf('/');
   const providerId = primary.slice(0, firstSlash);
   const modelId = primary.slice(firstSlash + 1);
@@ -158,8 +163,10 @@ if (!Object.keys(rawProviders).length) {
 }
 
 const rows = Object.entries(rawProviders).map(([id, provider]) => {
-  const displayName = displayNames[id]
-    || (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string'
+  const rawDisplayName = displayNames[id];
+  const displayName = (typeof rawDisplayName === 'string' && rawDisplayName)
+    ? rawDisplayName
+    : (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string'
       ? String(provider.models[0].name).split('/')[0].trim()
       : id);
   return {

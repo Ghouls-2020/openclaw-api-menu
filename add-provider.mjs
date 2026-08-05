@@ -29,7 +29,7 @@ if (rawArgs[0] === '--stdin') {
   [providerName, baseUrlRaw, apiKey] = rawArgs;
   providerDisplayName = providerName;
 }
-if (!providerName || !baseUrlRaw || !apiKey) {
+if (!providerName || !baseUrlRaw || !apiKey || !String(apiKey).trim()) {
   console.error('Usage: node add-provider.mjs --stdin OR <providerName> [providerDisplayName] <baseUrl> <apiKey>');
   process.exit(1);
 }

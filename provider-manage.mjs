@@ -79,7 +79,11 @@ function runConfigPatch(patch, extraArgs = []) {
   });
 }
 
-const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+let cfg;
+try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch (err) {
+  console.error(`OpenClaw 配置文件损坏或无法解析: ${CONFIG}`);
+  process.exit(1);
+}
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
 if (!cfg.agents) cfg.agents = {};
@@ -151,8 +155,8 @@ function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
 }
 
 function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
-  const defaults = config.agents?.defaults;
-  if (!defaults) return { changed: false, messages: [] };
+  const defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {}));
+  if (!defaults || Object.keys(defaults).length === 0) return { changed: false, messages: [], _nextDefaults: config.agents?.defaults || {} };
   const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
   const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
   const messages = [];
@@ -207,7 +211,7 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     repairString(field);
     repairObject(field);
   }
-  return { changed, messages };
+  return { changed, messages, _nextDefaults: defaults };
 }
 
 function pruneModelSelection(config, name) {
@@ -399,7 +403,11 @@ if (action === 'sync') {
     console.error('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
     process.exit(4);
   }
-  const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+  const modelsUrl = (() => {
+    const u = new URL(baseUrl);
+    const cleanPath = u.pathname.replace(/\/+$/, '');
+    return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+  })();
   let res;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -450,22 +458,28 @@ if (action === 'sync') {
     contextWindow: 1048576,
     maxTokens: 128000,
   }));
-  const wanted = new Set(ids.map(id => `${providerName}/${id}`));
-  const repairedDefaults = repairModelSelectionForSyncedProvider(cfg, providerName, ids);
-  let added = 0, removed = 0;
-  const modelRefPatch = { [`${providerName}/*`]: {} };
-  for (const ref of wanted) {
-    if (!modelMap[ref]) added += 1;
+  const hasWildcard = Object.prototype.hasOwnProperty.call(modelMap, `${providerName}/*`);
+  const existingFullRefs = Object.keys(modelMap).filter(k => k !== `${providerName}/*` && k.startsWith(`${providerName}/`));
+  const wantedFullRefs = ids.map(id => `${providerName}/${id}`);
+  const existingSet = new Set(existingFullRefs);
+  const wantedSet = new Set(wantedFullRefs);
+  const added = wantedFullRefs.filter(r => !existingSet.has(r)).length;
+  const removed = existingFullRefs.filter(r => !wantedSet.has(r)).length;
+  const modelRefPatch = {};
+  for (const ref of wantedFullRefs) {
+    if (!Object.prototype.hasOwnProperty.call(modelMap, ref)) modelRefPatch[ref] = {};
   }
-  for (const [key, value] of Object.entries(modelMap)) {
-    if (key === `${providerName}/*`) continue;
-    const [pfx] = key.split('/');
-    const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
-    if (pfx.toLowerCase() === providerName.toLowerCase() && isEmptyObject) {
-      modelRefPatch[key] = null;
-      if (!wanted.has(key)) removed += 1;
-    }
+  for (const key of existingFullRefs) {
+    if (!wantedSet.has(key)) modelRefPatch[key] = null;
   }
+  if (!hasWildcard) {
+    modelRefPatch[`${providerName}/*`] = {};
+  }
+  const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
+  const defaultsPatch = buildDefaultSelectionPatch(
+    repairedDefaults.changed ? { ...cfg.agents?.defaults, ...repairedDefaults._nextDefaults } : (cfg.agents?.defaults || {}),
+    previousDefaults
+  );
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -475,7 +489,7 @@ if (action === 'sync') {
     },
     agents: {
       defaults: {
-        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, previousDefaults),
+        ...defaultsPatch,
         models: modelRefPatch,
       },
     },
