@@ -33,7 +33,6 @@ const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
 const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
 const GATEWAY_RESTART_CHECK_MAX_ATTEMPTS = 20;
 const VERSION_HISTORY_VISIBLE_COUNT = 20;
-const MENU_BACKUP_KEEP_MAX = 20;
 const modelStatusCache = new Map();
 // 维护规矩:
 // 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 4个脚本 → push main → push tag(同名版本号)。
@@ -41,13 +40,11 @@ const modelStatusCache = new Map();
 //    脚本文件(4个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs / list-providers-cn.mjs
 //    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
 //    SSH Deploy Key:若VPS重装,需重新配置 ~/.ssh/config 中的 github-openclaw-api-menu 别名。
-// 1. 每次修改本脚本前,必须先创建一个备份到 openclaw-api-menu-backups/ 文件夹,命名格式:openclaw-api-menu.mjs-Vx.y.z
-// 2. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
-// 3. 修改涉及界面输出时,先检查实际显示效果,避免重复分隔线、重复选项或错位
-// 4. 非 TTY / Telegram 环境优先稳定显示,避免 console.clear() / 渐进刷新 / 重复刷屏
-// 5. 新增交互功能时,优先保持与现有"操作完成 / 按任意键继续..."风格一致
-// 6. MENU_VERSION_HISTORY 只保留最近 20 条;主菜单 [20] 版本记录页也只显示最近 20 条
-// 7. 版本备份文件按实际版本号递增,例如:openclaw-api-menu.mjs-V4.9.100、openclaw-api-menu.mjs-V4.9.101
+// 1. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
+// 2. 修改涉及界面输出时,先检查实际显示效果,避免重复分隔线、重复选项或错位
+// 3. 非 TTY / Telegram 环境优先稳定显示,避免 console.clear() / 渐进刷新 / 重复刷屏
+// 4. 新增交互功能时,优先保持与现有"操作完成 / 按任意键继续..."风格一致
+// 5. MENU_VERSION_HISTORY 只保留最近 20 条;主菜单 [20] 版本记录页也只显示最近 20 条
 // 版本规则:
 // - 小修改 / 小修复:V4.9.100、V4.9.101 这种递增
 // - 大功能 / 大调整:V5.0、V5.1 这种大版本号递增
@@ -61,6 +58,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.89',
+    updatedAt: '2026-08-06',
+    summary: [
+      '移除脚本启动时自动备份主菜单文件的功能。',
+      '脚本版本通过 Git 提交与发布 tag 管理，不再在本地重复生成菜单脚本备份。',
+    ],
+  },
   {
     version: 'v0.0.88',
     updatedAt: '2026-08-05',
@@ -231,8 +236,6 @@ const MENU_VERSION_HISTORY = [
     ],
   },
 ];
-const MENU_BACKUP_PREFIX = 'openclaw-api-menu.mjs-v';
-const MENU_BACKUP_DIR = path.join(__dirname, 'openclaw-api-menu-backups');
 const providerStatusCache = new Map();
 const menuRuntimeCache = {
   latestVersion: { value: null, ts: 0 },
@@ -392,112 +395,6 @@ function getCurrentMenuVersionInfo() {
     updatedAt: '未知',
     summary: ['未填写当前版本摘要'],
   };
-}
-
-function ensureMenuBackupDir() {
-  fs.mkdirSync(MENU_BACKUP_DIR, { recursive: true });
-  return MENU_BACKUP_DIR;
-}
-
-function cleanupMenuBackups() {
-  const backupDir = ensureMenuBackupDir();
-  const entries = fs.readdirSync(backupDir)
-    .filter((name) => name.startsWith(MENU_BACKUP_PREFIX))
-    .map((name) => {
-      const fullPath = path.join(backupDir, name);
-      let mtimeMs = 0;
-      try {
-        mtimeMs = fs.statSync(fullPath).mtimeMs;
-      } catch {}
-      return { name, fullPath, mtimeMs };
-    })
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
-
-  const stale = entries.slice(MENU_BACKUP_KEEP_MAX);
-  for (const item of stale) {
-    try {
-      fs.unlinkSync(item.fullPath);
-    } catch {}
-  }
-}
-
-function parseMenuVersion(version) {
-  const normalized = String(version || '').trim().toLowerCase();
-  if (!/^v\d+(?:\.\d+)*$/.test(normalized)) {
-    throw new Error(`菜单版本号格式无效:${version}`);
-  }
-  return normalized;
-}
-
-function compareMenuVersions(a, b) {
-  const pa = parseMenuVersion(a).slice(1).split('.').map(Number);
-  const pb = parseMenuVersion(b).slice(1).split('.').map(Number);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const diff = (pa[i] || 0) - (pb[i] || 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
-}
-
-function getMenuBackupEntries() {
-  const backupDir = ensureMenuBackupDir();
-  const pattern = /^openclaw-api-menu\.mjs-(V\d+(?:\.\d+)*)$/i;
-  return fs.readdirSync(backupDir)
-    .map((name) => {
-      const match = name.match(pattern);
-      if (!match) return null;
-      const fullPath = path.join(backupDir, name);
-      let mtimeMs = 0;
-      try {
-        mtimeMs = fs.statSync(fullPath).mtimeMs;
-      } catch {}
-      return { name, fullPath, version: match[1].toLowerCase(), mtimeMs };
-    })
-    .filter(Boolean)
-    .sort((a, b) => compareMenuVersions(b.version, a.version) || (b.mtimeMs - a.mtimeMs));
-}
-
-function getNextMenuBackupVersion(baseVersion = getCurrentMenuVersionInfo().version) {
-  return parseMenuVersion(baseVersion);
-}
-
-function backupMenuScript(version = getCurrentMenuVersionInfo().version) {
-  const scriptPath = path.join(__dirname, 'openclaw-api-menu.mjs');
-  const currentStat = fs.statSync(scriptPath);
-  const currentSize = currentStat.size;
-  const currentContent = fs.readFileSync(scriptPath, 'utf8');
-  const entries = getMenuBackupEntries();
-
-  for (const entry of entries) {
-    try {
-      const backupStat = fs.statSync(entry.fullPath);
-      if (backupStat.size !== currentSize) continue; // 大小不同，直接跳过
-      if (fs.readFileSync(entry.fullPath, 'utf8') === currentContent) {
-        cleanupMenuBackups();
-        return { path: entry.fullPath, created: false, version: entry.version, deduped: true };
-      }
-    } catch {}
-  }
-
-  // 备份文件名必须跟随当前正式版本号，不能自动递增到未来版本。
-  const backupVersion = getNextMenuBackupVersion(version);
-  const backupName = `openclaw-api-menu.mjs-${backupVersion}`;
-  const backupPath = path.join(ensureMenuBackupDir(), backupName);
-  fs.copyFileSync(scriptPath, backupPath);
-  cleanupMenuBackups();
-  return { path: backupPath, created: true, version: backupVersion, deduped: false };
-}
-
-function remindMenuVersionBackup() {
-  try {
-    const result = backupMenuScript(getCurrentMenuVersionInfo().version);
-    if (result.created) {
-      info(`已自动备份主菜单脚本:${path.basename(result.path)}(版本 ${result.version})`);
-    }
-  } catch (err) {
-    warn(`主菜单版本备份失败:${err.message}`);
-  }
 }
 
 function splitModelRef(ref) {
@@ -4187,7 +4084,6 @@ async function showMenu() {
 
   ensureOcapiShortcut({ verbose: true });
   pruneDisplayNameMap({ verbose: false });
-  remindMenuVersionBackup();
   const startup = loadWorkspaceState({ verbose: true });
   if (!startup.ok) {
     console.log(box('首次使用提示', [
