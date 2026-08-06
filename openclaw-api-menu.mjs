@@ -59,6 +59,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.90',
+    updatedAt: '2026-08-07',
+    summary: [
+      '修复 switchDefaultModel 选择模型后死循环无法退出的问题。',
+      '修复 5 处 JSON.parse 缺少 try/catch 保护的问题。',
+    ],
+  },
+  {
     version: 'v0.0.89',
     updatedAt: '2026-08-06',
     summary: [
@@ -417,7 +425,7 @@ function getSessionDisplayNameFromTrajectory(entry = {}) {
     if (!fs.existsSync(file)) return '';
     const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-80).reverse();
     for (const line of lines) {
-      const obj = JSON.parse(line);
+      let obj; try { obj = JSON.parse(line); } catch { continue; }
       const messages = obj?.data?.messagesSnapshot || obj?.data?.messages || [];
       for (const msg of messages) {
         if (msg?.customType !== 'openclaw.runtime-context' || typeof msg.content !== 'string') continue;
@@ -492,7 +500,7 @@ async function refreshTelegramBotNameFromApi() {
     const text = await res.text().catch(() => '');
     clearTimeout(timeoutId);
     if (!res.ok) return '';
-    const data = JSON.parse(text || '{}');
+    let data; try { data = JSON.parse(text || '{}'); } catch { return ''; }
     const name = cleanSessionDisplayName(data?.result?.first_name || data?.result?.username || '');
     if (!data?.ok || !name) return '';
     telegramBotNameCache.value = name;
@@ -969,7 +977,7 @@ function readJson(file, fallback) {
 function cloneFallback(fallback) {
   if (fallback === undefined || fallback === null) return fallback;
   if (typeof structuredClone === 'function') return structuredClone(fallback);
-  return JSON.parse(JSON.stringify(fallback));
+  try { return JSON.parse(JSON.stringify(fallback)); } catch { return fallback; }
 }
 
 function atomicWriteJsonFile(file, data) {
@@ -2311,8 +2319,9 @@ async function switchDefaultModel(ask) {
       applySelectedSessionSync(sessionSelection, ref);
       if (shouldUpdateDefault) success(`默认模型已设为:${formatProviderDisplay(chosenProvider.displayName, chosenProvider.id)} / ${model.id}`);
       await backPrompt(ask);
-      continue;
+      break;
     }
+    break;
   }
 }
 
@@ -2428,7 +2437,7 @@ async function syncAllProviders(ask) {
     return;
   }
   const beforeCfg = readJson(CONFIG, {});
-  const nextCfg = JSON.parse(JSON.stringify(beforeCfg));
+  let nextCfg; try { nextCfg = JSON.parse(JSON.stringify(beforeCfg)); } catch { warn('序列化配置失败，跳过同步。'); return false; }
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
@@ -3148,7 +3157,7 @@ function getOpenClawVersionChoices(currentVersionFull) {
     const res = runCommand('npm', ['view', 'openclaw', 'versions', '--json'], { timeout: 8000 });
     const raw = `${res.stdout || ''}${res.stderr || ''}`.trim();
     if (raw.startsWith('[')) {
-      const parsed = JSON.parse(raw);
+      let parsed; try { parsed = JSON.parse(raw); } catch { return; }
       if (Array.isArray(parsed)) {
         parsed.filter((v) => isStableVersion(v)).forEach((v) => pushRaw(v));
       }
