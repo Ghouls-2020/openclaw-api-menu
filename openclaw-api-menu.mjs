@@ -59,6 +59,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.91',
+    updatedAt: '2026-08-07',
+    summary: [
+      '修复 add-provider.mjs 与 provider-manage.mjs 共 4 处 JSON.parse 缺少 try/catch 保护。',
+      'cleanupSystemdUserGatewayService 删除文件失败时增加 warn 提示。',
+    ],
+  },
+  {
     version: 'v0.0.90',
     updatedAt: '2026-08-07',
     summary: [
@@ -3590,6 +3598,7 @@ function cleanupSystemdUserGatewayService() {
   } catch (err) {
     result.ok = false;
     result.steps.push({ name: 'remove-service-file', ok: false, output: err.message, path: servicePath });
+    warn(`清理 systemd service 文件失败: ${err.message}`);
   }
   pushStep('daemon-reload', runSystemdUser(['daemon-reload']));
   pushStep('reset-failed', runSystemdUser(['reset-failed', serviceName]), { tolerateMissing: true });

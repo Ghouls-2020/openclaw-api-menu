@@ -155,7 +155,7 @@ function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
 }
 
 function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
-  const defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {}));
+  let defaults; try { defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {})); } catch { return { changed: false, messages: ['序列化配置失败，跳过修复。'], _nextDefaults: config.agents?.defaults || {} }; }
   if (!defaults || Object.keys(defaults).length === 0) return { changed: false, messages: [], _nextDefaults: config.agents?.defaults || {} };
   const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
   const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
@@ -350,7 +350,7 @@ if (action === 'remove') {
       process.exit(3);
     }
   }
-  const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
+  let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
   delete cfg.models.providers[providerName];
   delete displayNames[providerName];
   let removed = 0;
@@ -448,7 +448,7 @@ if (action === 'sync') {
     console.error('No model IDs found in /models response');
     process.exit(5);
   }
-  const previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {}));
+  let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
   const displayName = getProviderDisplayName(providerName);
   provider.models = ids.map(id => ({
     id,

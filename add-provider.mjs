@@ -153,7 +153,7 @@ function findProviderDisplayNameConflict(name, providers = {}, displayNames = {}
   return null;
 }
 
-const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+let cfg; try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { console.error('配置 JSON 损坏,无法读取。'); process.exit(1); }
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
 if (cfg.models.providers[providerName]) {
