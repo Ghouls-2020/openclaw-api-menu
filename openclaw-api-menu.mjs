@@ -59,6 +59,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.93',
+    updatedAt: '2026-08-07',
+    summary: [
+      '修复 sessions.json 全量覆盖竞态条件：写入前重新读取并最小合并，避免覆盖 Gateway 并发写入。',
+    ],
+  },
+  {
     version: 'v0.0.92',
     updatedAt: '2026-08-07',
     summary: [
@@ -706,7 +713,12 @@ function syncSessionModelOverrides(sessionKeys, ref) {
   if (synced > 0) {
     backup = `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(storePath, backup);
-    writeJson(storePath, store);
+    // 写入前重新读取一次,最小合并,避免覆盖 Gateway 并发写入的其他 session
+    const freshStore = readJson(storePath, {});
+    for (const key of syncedKeys) {
+      if (store[key]) freshStore[key] = store[key];
+    }
+    writeJson(storePath, freshStore);
     verifyFailed = verifySessionModelOverrides(storePath, syncedKeys, ref);
   }
   return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, storePath, backup };
@@ -719,7 +731,10 @@ function deleteTelegramSessionRecords(sessionKeys) {
   const existingKeys = keys.filter((key) => store && Object.prototype.hasOwnProperty.call(store, key));
   if (!existingKeys.length) return { ok: true, deleted: 0, storePath };
   for (const key of existingKeys) delete store[key];
-  writeJson(storePath, store);
+  // 写入前重新读取一次,最小合并,避免 Gateway 并发写入的 session 被全量覆盖
+  const freshStore = readJson(storePath, {});
+  for (const key of existingKeys) delete freshStore[key];
+  writeJson(storePath, freshStore);
   return { ok: true, deleted: existingKeys.length, storePath };
 }
 
