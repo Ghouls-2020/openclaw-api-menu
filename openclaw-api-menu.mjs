@@ -59,6 +59,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.92',
+    updatedAt: '2026-08-07',
+    summary: [
+      '修复 getOpenClawVersionChoices 中 catch bare return 导致菜单崩溃的问题。',
+      '修复 detectModelStatus 失败路径错误将 online 设为 true 导致模型误显在线。',
+      '修复 progressBar total=0 时 NaN 崩溃、C.dim 未定义导致帮助失显、backPrompt 死循环。',
+    ],
+  },
+  {
     version: 'v0.0.91',
     updatedAt: '2026-08-07',
     summary: [
@@ -305,7 +314,7 @@ const visibleLen = (s) => {
 const line = (ch, n) => ch.repeat(Math.max(0, n));
 
 function progressBar(current, total, width = 20) {
-  const percent = Math.min(Math.max(current / total, 0), 1);
+  const percent = total > 0 ? Math.min(Math.max(current / total, 0), 1) : 0;
   const filled = Math.floor(percent * width);
   const empty = width - filled;
   return `[${color('='.repeat(filled), C.green, C.bold)}>${' '.repeat(empty)}] ${current}/${total}`;
@@ -1690,7 +1699,7 @@ async function detectModelStatus(provider, modelId, options = {}) {
         httpStatus: bestFailure?.httpStatus || null,
         _cached: false,
         modelExistsLocally,
-        online: true,
+        online: false,
       };
       modelStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return result;
@@ -2149,10 +2158,7 @@ function normalizeModel(displayName, id) {
 async function backPrompt(ask) {
   console.log(color('操作完成', C.green, C.bold));
   console.log(color('按任意键继续...', C.white, C.bold));
-  while (true) {
-    const ans = await ask('');
-    if (ans === '0' || ans === '' || ans) return;
-  }
+  await ask('');
 }
 
 function renderNumberedLine(num, label, note = '', options = {}) {
@@ -3165,7 +3171,7 @@ function getOpenClawVersionChoices(currentVersionFull) {
     const res = runCommand('npm', ['view', 'openclaw', 'versions', '--json'], { timeout: 8000 });
     const raw = `${res.stdout || ''}${res.stderr || ''}`.trim();
     if (raw.startsWith('[')) {
-      let parsed; try { parsed = JSON.parse(raw); } catch { return; }
+      let parsed; try { parsed = JSON.parse(raw); } catch { parsed = []; }
       if (Array.isArray(parsed)) {
         parsed.filter((v) => isStableVersion(v)).forEach((v) => pushRaw(v));
       }
@@ -4083,8 +4089,8 @@ async function showMenu() {
   const isHelp = process.argv.includes('--help') || process.argv.includes('-h');
   if (isHelp) {
     console.log(box('OpenClaw API 管理工具', [
-      color(`版本: ${getCurrentMenuDisplayVersion()} | 更新: ${getCurrentMenuVersionInfo().updatedAt}`, C.dim),
-      color('功能: 模型切换 / API 增删改 / 模型同步 / 系统升级重启 / 备份卸载', C.dim),
+      color(`版本: ${getCurrentMenuDisplayVersion()} | 更新: ${getCurrentMenuVersionInfo().updatedAt}`, C.gray),
+      color('功能: 模型切换 / API 增删改 / 模型同步 / 系统升级重启 / 备份卸载', C.gray),
     ], C.cyan));
     console.log('');
     console.log(color(' 📖 使用说明', C.bold));
