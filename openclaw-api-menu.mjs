@@ -59,6 +59,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.94',
+    updatedAt: '2026-08-10',
+    summary: [
+      '修复 add-provider.mjs 添加新 provider 后需要重启 OpenClaw 才能生效的问题。',
+      '根本原因：外部脚本 runConfigPatch 缺少 --replace-path 参数，runtime 不知道有新 provider 加入。',
+      '修复：给 config patch --stdin 加上 models.providers.<id> 和 agents.defaults.models 两条 replace-path。',
+    ],
+  },
+  {
     version: 'v0.0.93',
     updatedAt: '2026-08-07',
     summary: [
