@@ -38,6 +38,14 @@ function atomicWriteJsonFile(file, data) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  // 目标已存在(如修复损坏文件)时保留原权限/属主
+  try {
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file);
+      fs.chmodSync(tmp, st.mode & 0o7777);
+      try { fs.chownSync(tmp, st.uid, st.gid); } catch {}
+    }
+  } catch {}
   fs.renameSync(tmp, file);
 }
 
@@ -69,6 +77,14 @@ function writeJson(file, data) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  // 覆盖已存在文件时保留原权限/属主
+  try {
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file);
+      fs.chmodSync(tmp, st.mode & 0o7777);
+      try { fs.chownSync(tmp, st.uid, st.gid); } catch {}
+    }
+  } catch {}
   fs.renameSync(tmp, file);
 }
 

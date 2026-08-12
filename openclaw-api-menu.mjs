@@ -61,6 +61,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.96',
+    updatedAt: '2026-08-13',
+    summary: [
+      'writeJson / atomicWriteJsonFile 覆盖已存在文件时保留原权限与属主(chmodSync + chownSync)。',
+      '主脚本与 add-provider.mjs、provider-manage.mjs 统一修复,避免覆盖文件丢失权限位。',
+    ],
+  },
+  {
     version: 'v0.0.95',
     updatedAt: '2026-08-13',
     summary: [
@@ -1038,6 +1046,14 @@ function atomicWriteJsonFile(file, data) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  // 若目标已存在(如修复损坏文件时),保留原权限/属主
+  try {
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file);
+      fs.chmodSync(tmp, st.mode & 0o7777);
+      try { fs.chownSync(tmp, st.uid, st.gid); } catch { /* 非 root 时忽略 */ }
+    }
+  } catch { /* 尽力保留权限,失败不阻断 */ }
   fs.renameSync(tmp, file);
 }
 
@@ -1082,6 +1098,14 @@ function writeJson(file, data) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = path.join(dir, `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}`);
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n');
+  // 覆盖已存在文件时保留原权限/属主,避免换文件丢失敏感文件的权限位
+  try {
+    if (fs.existsSync(file)) {
+      const st = fs.statSync(file);
+      fs.chmodSync(tmp, st.mode & 0o7777);
+      try { fs.chownSync(tmp, st.uid, st.gid); } catch { /* 非 root 或跨用户时忽略 */ }
+    }
+  } catch { /* 尽力保留权限,失败不阻断写入 */ }
   fs.renameSync(tmp, file);
 }
 
