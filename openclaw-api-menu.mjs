@@ -61,14 +61,22 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.94',
+    version: 'v0.0.95',
     updatedAt: '2026-08-13',
     summary: [
+      '修复 setDowngradeConfigTouchedVersion 下方残留的旧孤立代码块，导致 node --check 报 Illegal return statement。',
       '确认 4 项修复已全部到位，无需额外改动：',
       '必修1: STATE_DIR 统一 (4 脚本均用 process.env.OPENCLAW_STATE_DIR || ~/.openclaw)',
       '必修2: 降级时不破坏 openclaw.json (优先 CLI patch, 回退定向文本替换 + 保留权限)',
       '必修3: add-provider 幂等检测 (provider 已存在时视为写入成功)',
       '必修4: 卸载失败保护 (npm uninstall 失败或程序仍存在时询问用户再删配置)',
+    ],
+  },
+  {
+    version: 'v0.0.94',
+    updatedAt: '2026-08-13',
+    summary: [
+      '确认 4 项修复已全部到位，无需额外改动。',
     ],
   },
   {
