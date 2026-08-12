@@ -6,7 +6,8 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
+const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(SCRIPT_DIR, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 8000;
 
@@ -156,9 +157,17 @@ function findProviderDisplayNameConflict(name, providers = {}, displayNames = {}
 let cfg; try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { console.error('配置 JSON 损坏,无法读取。'); process.exit(1); }
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
+// 幂等模式:若 provider 已存在,视为“已写入成功”,补做 displayNames 同步后正常退出。
+// 主脚本重试/并发调用时不会因“Provider already exists”而误报失败。
 if (cfg.models.providers[providerName]) {
-  console.error(`Provider already exists: ${providerName}`);
-  process.exit(2);
+  const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
+  if (!displayNames[providerName]) {
+    displayNames[providerName] = providerDisplayName;
+    writeJson(DISPLAY_NAMES, displayNames);
+  }
+  console.log(`Provider already exists: ${providerName}`);
+  console.log('幂等模式:已存在,视为写入成功,跳过新增写入。');
+  process.exit(0);
 }
 const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
 const displayNameConflict = findProviderDisplayNameConflict(providerDisplayName, cfg.models.providers, displayNames, providerName);

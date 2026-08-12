@@ -13,7 +13,8 @@ if (!action || !providerInput || !['check','sync','remove','rename'].includes(ac
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
+const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 8000;
 if (!fs.existsSync(CONFIG)) {

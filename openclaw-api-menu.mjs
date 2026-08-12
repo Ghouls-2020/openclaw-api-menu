@@ -10,10 +10,12 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const WORKSPACE = path.resolve(__dirname, '..');
-const CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw.json');
+// 统一状态目录:全部脚本共用同一套 OPENCLAW_STATE_DIR,避免主菜单与子脚本读写不同配置。
+const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
+const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
-const LOCAL_MENU_CONFIG = path.join(os.homedir(), '.openclaw', 'openclaw-api-menu.local.json');
+const LOCAL_MENU_CONFIG = path.join(STATE_DIR, 'openclaw-api-menu.local.json');
 const TELEGRAM_BOT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
@@ -58,6 +60,17 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.0.94',
+    updatedAt: '2026-08-13',
+    summary: [
+      '确认 4 项修复已全部到位，无需额外改动：',
+      '必修1: STATE_DIR 统一 (4 脚本均用 process.env.OPENCLAW_STATE_DIR || ~/.openclaw)',
+      '必修2: 降级时不破坏 openclaw.json (优先 CLI patch, 回退定向文本替换 + 保留权限)',
+      '必修3: add-provider 幂等检测 (provider 已存在时视为写入成功)',
+      '必修4: 卸载失败保护 (npm uninstall 失败或程序仍存在时询问用户再删配置)',
+    ],
+  },
   {
     version: 'v0.0.93',
     updatedAt: '2026-08-07',
@@ -437,7 +450,7 @@ function splitModelRef(ref) {
 }
 
 function getMainSessionStorePath() {
-  const stateDir = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
+  const stateDir = STATE_DIR;
   return path.join(stateDir, 'agents', 'main', 'sessions', 'sessions.json');
 }
 
@@ -1150,7 +1163,7 @@ function getWorkspaceCfg(options = {}) {
 }
 
 function getWorkspaceSkillsDir() {
-  return path.join(os.homedir(), '.openclaw', 'workspace', 'skills');
+  return path.join(STATE_DIR, 'workspace', 'skills');
 }
 
 function normalizeSkillDescription(skillName, rawDescription = '') {
@@ -3538,17 +3551,49 @@ function setDowngradeConfigTouchedVersion(targetVersion) {
   if (!/^\d{4}\.\d+\.\d+$/.test(normalized)) {
     return { ok: false, reason: '目标版本格式无效' };
   }
+  const touchedAt = new Date().toISOString();
+  // 路径 1:优先调用 OpenClaw CLI(config patch),官方支持的写入方式,保留 JSON5 注释/格式与文件权限。
+  try {
+    const patchRes = runCommand('openclaw', ['config', 'patch', '--stdin'], {
+      input: JSON.stringify({ meta: { lastTouchedVersion: normalized, lastTouchedAt: touchedAt } }),
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    if (patchRes.status === 0) {
+      return { ok: true, version: normalized, via: 'cli' };
+    }
+  } catch {
+    // 落到路径 2
+  }
+  // 路径 2:CLI 不可用时直接写文件;只做定向文本替换,保留剩余 JSON5 内容、文件权限与属主,绝不整体重写。
   try {
     const raw = fs.readFileSync(CONFIG, 'utf8');
-    const cfg = JSON.parse(raw);
-    cfg.meta = cfg.meta && typeof cfg.meta === 'object' && !Array.isArray(cfg.meta) ? cfg.meta : {};
-    cfg.meta.lastTouchedVersion = normalized;
-    cfg.meta.lastTouchedAt = new Date().toISOString();
-    const tmp = `${CONFIG}.tmp-${process.pid}`;
-    fs.writeFileSync(tmp, `${JSON.stringify(cfg, null, 2)}
-`, 'utf8');
+    const stat = fs.statSync(CONFIG);
+    const hasMeta = /(^|[\s,])meta\s*:/.test(raw);
+    let next;
+    if (hasMeta) {
+      next = raw
+        .replace(/(lastTouchedVersion\s*:\s*)("[^"]*"|'[^']*'|\d+)/, `$1"${normalized}"`)
+        .replace(/(lastTouchedAt\s*:\s*)("[^"]*"|'[^']*')/, `$1"${touchedAt}"`);
+      if (next === raw) {
+        // 有 meta 但缺字段:回退到 JSON 解析补全(仍保留权限)。
+        const cfg = JSON.parse(raw);
+        cfg.meta = cfg.meta && typeof cfg.meta === 'object' && !Array.isArray(cfg.meta) ? cfg.meta : {};
+        cfg.meta.lastTouchedVersion = normalized;
+        cfg.meta.lastTouchedAt = touchedAt;
+        next = `${JSON.stringify(cfg, null, 2)}\n`;
+      }
+    } else {
+      const cfg = JSON.parse(raw);
+      cfg.meta = { lastTouchedVersion: normalized, lastTouchedAt: touchedAt };
+      next = `${JSON.stringify(cfg, null, 2)}\n`;
+    }
+    const tmp = `${CONFIG}.tmp-${process.pid}-${Date.now()}`;
+    fs.writeFileSync(tmp, next, 'utf8');
+    fs.chmodSync(tmp, stat.mode & 0o7777); // 保留原权限
+    try { fs.chownSync(tmp, stat.uid, stat.gid); } catch { /* 非 root 或跨用户时忽略 */ }
     fs.renameSync(tmp, CONFIG);
-    return { ok: true, version: normalized };
+    return { ok: true, version: normalized, via: 'manual' };
   } catch (err) {
     return { ok: false, reason: err.message };
   }
@@ -3780,8 +3825,8 @@ async function backupOpenClaw(ask) {
   section('备份 OpenClaw 配置');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const output = path.join(os.homedir(), `openclaw-backup-${ts}.tar.gz`);
-  info('正在备份 ~/.openclaw，请稍等...');
-  const res = spawnSync('tar', ['-czf', output, '-C', os.homedir(), '.openclaw'], { stdio: 'inherit' });
+  info('正在备份配置，请稍等...');
+  const res = spawnSync('tar', ['-czf', output, '-C', STATE_DIR, '.'], { stdio: 'inherit' });
   if (res.status === 0) {
     success('OpenClaw 配置备份成功。');
     info(`备份文件:${output}`);
@@ -3844,19 +3889,38 @@ async function purgeOpenClaw(ask) {
   }
   info('正在卸载 OpenClaw，请稍等...');
   const uninstallRes = runCommand('npm', ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
+  // 失败保护:确认程序真的卸载成功才删配置,避免“程序还在、配置/Token/Session 全没了”。
+  const stillInstalled = getOpenClawVersion() !== '';
+  if (uninstallRes.status === 0 && !stillInstalled) {
+    try {
+      fs.rmSync(STATE_DIR, { recursive: true, force: true });
+    } catch (err) {
+      danger(`数据目录删除失败: ${err.message}`);
+      await backPrompt(ask);
+      return;
+    }
+    success('OpenClaw 已彻底卸载。');
+    info('程序、本地配置、数据和 Gateway systemd user service 残留均已处理。');
+    await backPrompt(ask);
+    return;
+  }
+  // 卸载失败(或程序仍存在):不再自动删配置,改为询问用户。
+  warn('OpenClaw 卸载失败或程序仍存在,默认不会删除配置/Token/Session。');
+  if (stillInstalled) warn('检测到 openclaw 命令仍可用,程序本体可能未卸载干净。');
+  const forceConfirm = await ask(color('卸载失败,是否仍然删除配置目录并继续？(y/N): ', C.red, C.bold));
+  if (forceConfirm.toLowerCase() !== 'y') {
+    info('已保留配置和数据,未删除任何文件。');
+    await backPrompt(ask);
+    return;
+  }
   try {
-    fs.rmSync(path.join(os.homedir(), '.openclaw'), { recursive: true, force: true });
+    fs.rmSync(STATE_DIR, { recursive: true, force: true });
   } catch (err) {
     danger(`数据目录删除失败: ${err.message}`);
     await backPrompt(ask);
     return;
   }
-  if (uninstallRes.status === 0) {
-    success('OpenClaw 已彻底卸载。');
-    info('程序、本地配置、数据和 Gateway systemd user service 残留均已处理。');
-  } else {
-    warn('程序卸载可能未完成,但 ~/.openclaw 已删除,systemd service 残留也已尝试清理。');
-  }
+  warn('配置目录已强制删除,但程序卸载可能未完成,请手动检查 npm 卸载状态。');
   await backPrompt(ask);
 }
 
