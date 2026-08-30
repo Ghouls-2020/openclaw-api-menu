@@ -61,11 +61,11 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.96',
-    updatedAt: '2026-08-13',
+    version: 'v0.0.97',
+    updatedAt: '2026-08-31',
     summary: [
-      'writeJson / atomicWriteJsonFile 覆盖已存在文件时保留原权限与属主(chmodSync + chownSync)。',
-      '主脚本与 add-provider.mjs、provider-manage.mjs 统一修复,避免覆盖文件丢失权限位。',
+      'Telegram 会话模型切换优先通过 Gateway sessions.patch 写入,避免直接改 sessions.json 被 Gateway 缓存覆盖。',
+      '模型应用范围改为展示全部 Telegram 群/私聊会话,不再因最近 30 条限制漏掉天气文案群。',
     ],
   },
   {
@@ -680,6 +680,36 @@ function listSyncableTelegramSessions(limit = 30) {
   return { storePath, store, rows };
 }
 
+function patchSessionModelViaGateway(sessionKey, ref) {
+  const result = runCommand('openclaw', [
+    'gateway', 'call', 'sessions.patch',
+    '--params', JSON.stringify({ key: sessionKey, model: ref }),
+    '--json',
+  ], {
+    cwd: WORKSPACE,
+    timeout: 15000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  const output = String(result.stdout || '').trim();
+  try {
+    const response = JSON.parse(output || '{}');
+    if (response.ok === false || response.error) {
+      return { ok: false, reason: response.error?.message || response.error || 'Gateway 拒绝会话模型切换。' };
+    }
+  } catch {
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        reason: String(result.stderr || result.stdout || 'Gateway sessions.patch 调用失败').trim(),
+        gatewayUnavailable: true,
+      };
+    }
+    return { ok: false, reason: 'Gateway 返回了无法解析的结果。' };
+  }
+  if (result.status !== 0) return { ok: false, reason: 'Gateway sessions.patch 调用失败。' };
+  return { ok: true };
+}
+
 function applySessionModelOverrideInStore(store, sessionKey, ref) {
   const [providerId, modelId] = splitModelRef(ref);
   if (!providerId || !modelId) return { ok: false, reason: `模型引用无效:${ref}` };
@@ -727,28 +757,40 @@ function syncSessionModelOverrides(sessionKeys, ref) {
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   let synced = 0;
   const syncedKeys = [];
+  const fallbackKeys = [];
   const failed = [];
   for (const key of keys) {
+    const gatewayResult = patchSessionModelViaGateway(key, ref);
+    if (gatewayResult.ok) {
+      synced += 1;
+      syncedKeys.push(key);
+      continue;
+    }
+    if (!gatewayResult.gatewayUnavailable) {
+      failed.push({ key, reason: gatewayResult.reason });
+      continue;
+    }
     const result = applySessionModelOverrideInStore(store, key, ref);
     if (result.ok) {
       synced += 1;
       syncedKeys.push(key);
+      fallbackKeys.push(key);
     } else {
       failed.push({ key, reason: result.reason });
     }
   }
   let backup = '';
   let verifyFailed = [];
-  if (synced > 0) {
+  if (fallbackKeys.length > 0) {
     backup = `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(storePath, backup);
     // 写入前重新读取一次,最小合并,避免覆盖 Gateway 并发写入的其他 session
     const freshStore = readJson(storePath, {});
-    for (const key of syncedKeys) {
+    for (const key of fallbackKeys) {
       if (store[key]) freshStore[key] = store[key];
     }
     writeJson(storePath, freshStore);
-    verifyFailed = verifySessionModelOverrides(storePath, syncedKeys, ref);
+    verifyFailed = verifySessionModelOverrides(storePath, fallbackKeys, ref);
   }
   return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, storePath, backup };
 }
@@ -793,7 +835,7 @@ function sortTelegramSessionsForMenu(rows = []) {
 async function confirmSyncTelegramSessions(ask, ref) {
   await refreshTelegramBotNameFromApi();
   while (true) {
-    const { rows: rawRows } = listSyncableTelegramSessions(30);
+    const { rows: rawRows } = listSyncableTelegramSessions(1000);
     const rows = sortTelegramSessionsForMenu(rawRows);
     if (!rows.length) {
       info('未找到可同步的 Telegram 群/私聊会话,将只设置默认模型。');
