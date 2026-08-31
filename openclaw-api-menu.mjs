@@ -61,10 +61,11 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.98',
+    version: 'v0.0.99',
     updatedAt: '2026-08-31',
     summary: [
       '修复多 agent Telegram 会话识别:按各 agent 的 sessions.json 扫描,支持 weather 等非 main agent 群聊。',
+      '会话菜单显示 agent 名称,避免 main 中的旧同名记录与 weather 实际会话混淆。',
       'Telegram 会话模型切换优先通过 Gateway sessions.patch 写入,避免直接改 sessions.json 被 Gateway 缓存覆盖。',
     ],
   },
@@ -629,7 +630,7 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
   const text = String(key || '');
   const match = text.match(/^agent:([^:]+):([^:]+):(direct|group|slash):(.+)$/);
   if (match) {
-    const [, , , kind, target] = match;
+    const [, agentId, , kind, target] = match;
     const friendlyName = getSessionFriendlyName(key, entry);
     if (kind === 'direct') {
       const directName = getDirectChatDisplayName(target) || friendlyName;
@@ -637,8 +638,8 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
       return `TG私聊用户`;
     }
     if (kind === 'group') {
-      if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】`;
-      return `TG群聊`;
+      if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】 [${agentId}]`;
+      return `TG群聊 [${agentId}]`;
     }
     return `TG Slash【${friendlyName || target}】`;
   }
