@@ -61,11 +61,11 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.97',
+    version: 'v0.0.98',
     updatedAt: '2026-08-31',
     summary: [
+      '修复多 agent Telegram 会话识别:按各 agent 的 sessions.json 扫描,支持 weather 等非 main agent 群聊。',
       'Telegram 会话模型切换优先通过 Gateway sessions.patch 写入,避免直接改 sessions.json 被 Gateway 缓存覆盖。',
-      '模型应用范围改为展示全部 Telegram 群/私聊会话,不再因最近 30 条限制漏掉天气文案群。',
     ],
   },
   {
@@ -465,15 +465,29 @@ function splitModelRef(ref) {
   return [text.slice(0, firstSlash), text.slice(firstSlash + 1)];
 }
 
-function getMainSessionStorePath() {
+function getSessionStorePath(agentId = 'main') {
   const stateDir = STATE_DIR;
-  return path.join(stateDir, 'agents', 'main', 'sessions', 'sessions.json');
+  return path.join(stateDir, 'agents', String(agentId || 'main'), 'sessions', 'sessions.json');
 }
 
-function getSessionDisplayNameFromTrajectory(entry = {}) {
+function getConfiguredAgentIds() {
+  const cfg = readJson(CONFIG, {});
+  const ids = ['main'];
+  for (const agent of Array.isArray(cfg?.agents?.list) ? cfg.agents.list : []) {
+    if (typeof agent?.id === 'string' && agent.id.trim() && !ids.includes(agent.id.trim())) ids.push(agent.id.trim());
+  }
+  return ids;
+}
+
+function getAgentIdFromSessionKey(key) {
+  const match = String(key || '').match(/^agent:([^:]+):/);
+  return match?.[1] || 'main';
+}
+
+function getSessionDisplayNameFromTrajectory(entry = {}, agentId = 'main') {
   const sessionId = entry.sessionId;
   if (!sessionId) return '';
-  const file = path.join(getMainSessionStorePath(), '..', `${sessionId}.trajectory.jsonl`);
+  const file = path.join(getSessionStorePath(agentId), '..', `${sessionId}.trajectory.jsonl`);
   try {
     if (!fs.existsSync(file)) return '';
     const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-80).reverse();
@@ -603,7 +617,7 @@ function getSessionFriendlyName(key, entry = {}) {
     .map(cleanSessionDisplayName)
     .filter(Boolean);
   if (directFields.length) return directFields[0];
-  return getSessionDisplayNameFromTrajectory(entry);
+  return getSessionDisplayNameFromTrajectory(entry, getAgentIdFromSessionKey(key));
 }
 
 function extractSessionTargetId(key) {
@@ -670,14 +684,19 @@ function getActiveTelegramSessionFromStatus() {
 }
 
 function listSyncableTelegramSessions(limit = 30) {
-  const storePath = getMainSessionStorePath();
-  const store = readJson(storePath, {});
-  const rows = Object.entries(store || {})
-    .filter(([key]) => /^agent:[^:]+:telegram:(group|direct):/.test(String(key)))
-    .map(([key, entry]) => ({ key, entry: entry || {}, updatedAt: Number(entry?.updatedAt || 0) }))
-    .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, limit);
-  return { storePath, store, rows };
+  const stores = [];
+  const rows = [];
+  for (const agentId of getConfiguredAgentIds()) {
+    const storePath = getSessionStorePath(agentId);
+    const store = readJson(storePath, {});
+    stores.push({ agentId, storePath, store });
+    for (const [key, entry] of Object.entries(store || {})) {
+      if (!/^agent:[^:]+:telegram:(group|direct):/.test(String(key))) continue;
+      rows.push({ key, entry: entry || {}, agentId, storePath, updatedAt: Number(entry?.updatedAt || 0) });
+    }
+  }
+  rows.sort((a, b) => b.updatedAt - a.updatedAt);
+  return { stores, rows: rows.slice(0, limit) };
 }
 
 function patchSessionModelViaGateway(sessionKey, ref) {
@@ -752,12 +771,11 @@ function verifySessionModelOverrides(storePath, sessionKeys, ref) {
 }
 
 function syncSessionModelOverrides(sessionKeys, ref) {
-  const { storePath, store } = listSyncableTelegramSessions(1000);
-  if (!fs.existsSync(storePath)) return { ok: false, synced: 0, reason: `会话文件不存在:${storePath}` };
+  const { stores } = listSyncableTelegramSessions(1000);
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   let synced = 0;
   const syncedKeys = [];
-  const fallbackKeys = [];
+  const fallbackRows = [];
   const failed = [];
   for (const key of keys) {
     const gatewayResult = patchSessionModelViaGateway(key, ref);
@@ -770,29 +788,34 @@ function syncSessionModelOverrides(sessionKeys, ref) {
       failed.push({ key, reason: gatewayResult.reason });
       continue;
     }
-    const result = applySessionModelOverrideInStore(store, key, ref);
+    const storeInfo = stores.find((item) => Object.prototype.hasOwnProperty.call(item.store, key));
+    const result = applySessionModelOverrideInStore(storeInfo?.store, key, ref);
     if (result.ok) {
       synced += 1;
       syncedKeys.push(key);
-      fallbackKeys.push(key);
+      fallbackRows.push({ key, storeInfo });
     } else {
       failed.push({ key, reason: result.reason });
     }
   }
   let backup = '';
   let verifyFailed = [];
-  if (fallbackKeys.length > 0) {
-    backup = `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+  for (const group of new Map(fallbackRows.map((row) => [row.storeInfo?.storePath, row])).entries()) {
+    const [storePath] = group;
+    const rowsForStore = fallbackRows.filter((row) => row.storeInfo?.storePath === storePath);
+    if (!storePath) continue;
+    const storeInfo = rowsForStore[0].storeInfo;
+    backup = backup || `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(storePath, backup);
     // 写入前重新读取一次,最小合并,避免覆盖 Gateway 并发写入的其他 session
     const freshStore = readJson(storePath, {});
-    for (const key of fallbackKeys) {
-      if (store[key]) freshStore[key] = store[key];
+    for (const row of rowsForStore) {
+      if (storeInfo.store[row.key]) freshStore[row.key] = storeInfo.store[row.key];
     }
     writeJson(storePath, freshStore);
-    verifyFailed = verifySessionModelOverrides(storePath, fallbackKeys, ref);
+    verifyFailed.push(...verifySessionModelOverrides(storePath, rowsForStore.map((row) => row.key), ref));
   }
-  return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, storePath, backup };
+  return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, backup };
 }
 
 function deleteTelegramSessionRecords(sessionKeys) {
@@ -945,14 +968,14 @@ function getSessionTargetDisplayName(key, entry = {}) {
 }
 
 function describeSessionTargets(sessionKeys = []) {
-  const { store } = listSyncableTelegramSessions(1000);
-  const rows = [...new Set((sessionKeys || []).filter(Boolean))]
-    .map((key) => ({ key, entry: store?.[key] || {} }));
-  const groupNames = rows
+  const { rows: allRows } = listSyncableTelegramSessions(1000);
+  const selectedRows = [...new Set((sessionKeys || []).filter(Boolean))]
+    .map((key) => ({ key, entry: allRows.find((item) => item.key === key)?.entry || {} }));
+  const groupNames = selectedRows
     .filter((row) => /^agent:[^:]+:telegram:group:/.test(String(row.key || '')))
     .map((row) => getSessionTargetDisplayName(row.key, row.entry))
     .filter(Boolean);
-  const directNames = rows
+  const directNames = selectedRows
     .filter((row) => /^agent:[^:]+:telegram:direct:/.test(String(row.key || '')))
     .map((row) => getSessionTargetDisplayName(row.key, row.entry))
     .filter(Boolean);
