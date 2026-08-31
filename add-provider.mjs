@@ -173,18 +173,6 @@ function findProviderDisplayNameConflict(name, providers = {}, displayNames = {}
 let cfg; try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { console.error('配置 JSON 损坏,无法读取。'); process.exit(1); }
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
-// 幂等模式:若 provider 已存在,视为“已写入成功”,补做 displayNames 同步后正常退出。
-// 主脚本重试/并发调用时不会因“Provider already exists”而误报失败。
-if (cfg.models.providers[providerName]) {
-  const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
-  if (!displayNames[providerName]) {
-    displayNames[providerName] = providerDisplayName;
-    writeJson(DISPLAY_NAMES, displayNames);
-  }
-  console.log(`Provider already exists: ${providerName}`);
-  console.log('幂等模式:已存在,视为写入成功,跳过新增写入。');
-  process.exit(0);
-}
 const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
 const displayNameConflict = findProviderDisplayNameConflict(providerDisplayName, cfg.models.providers, displayNames, providerName);
 if (displayNameConflict) {
@@ -194,6 +182,36 @@ if (displayNameConflict) {
 if (!cfg.agents) cfg.agents = {};
 if (!cfg.agents.defaults) cfg.agents.defaults = {};
 if (!cfg.agents.defaults.models) cfg.agents.defaults.models = {};
+
+function buildModelPolicyWithProvider(defaults, name) {
+  const allow = defaults?.modelPolicy?.allow;
+  // 空/缺省策略表示允许所有模型；只有显式启用白名单时才追加，避免意外收紧现有配置。
+  if (!Array.isArray(allow) || allow.length === 0) return null;
+  const wildcard = `${name}/*`;
+  if (allow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())) return [...allow];
+  return [...allow, wildcard];
+}
+
+// 幂等重试只补齐目录和显式白名单，不覆盖已有 Provider 的 URL、密钥或模型列表。
+if (cfg.models.providers[providerName]) {
+  const defaultsPatch = { models: { [`${providerName}/*`]: {} } };
+  const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
+  if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+  const patchRes = runConfigPatch({ agents: { defaults: defaultsPatch } });
+  if (patchRes.status !== 0) {
+    console.error('Failed to repair existing provider config');
+    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
+    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    process.exit(patchRes.status || 4);
+  }
+  if (!displayNames[providerName]) {
+    displayNames[providerName] = providerDisplayName;
+    writeJson(DISPLAY_NAMES, displayNames);
+  }
+  console.log(`Provider already exists: ${providerName}`);
+  console.log('幂等模式:已补齐模型目录与显式模型白名单。');
+  process.exit(0);
+}
 
 let res;
 const controller = new AbortController();
@@ -240,6 +258,9 @@ if (!ids.length) {
 
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
 const modelsPatch = { [`${providerName}/*`]: {} };
+const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
+const defaultsPatch = { models: modelsPatch };
+if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
 
 console.error('正在写入配置，请稍等...');
 const patchRes = runConfigPatch({
@@ -253,11 +274,7 @@ const patchRes = runConfigPatch({
       },
     },
   },
-  agents: {
-    defaults: {
-      models: modelsPatch,
-    },
-  },
+  agents: { defaults: defaultsPatch },
 });
 if (patchRes.status !== 0) {
   console.error('Failed to apply config patch');

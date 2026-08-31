@@ -107,6 +107,26 @@ if (!cfg.agents) cfg.agents = {};
 if (!cfg.agents.defaults) cfg.agents.defaults = {};
 if (!cfg.agents.defaults.models) cfg.agents.defaults.models = {};
 
+function getExplicitModelPolicyAllow(defaults = cfg.agents.defaults) {
+  const allow = defaults?.modelPolicy?.allow;
+  return Array.isArray(allow) && allow.length > 0 ? allow : null;
+}
+
+function addProviderToModelPolicy(defaults, name) {
+  const allow = getExplicitModelPolicyAllow(defaults);
+  if (!allow) return null;
+  const wildcard = `${name}/*`;
+  return allow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())
+    ? [...allow]
+    : [...allow, wildcard];
+}
+
+function removeProviderFromModelPolicy(defaults, name) {
+  const allow = getExplicitModelPolicyAllow(defaults);
+  if (!allow) return null;
+  return allow.filter((ref) => !isProviderRef(ref, name));
+}
+
 const providers = cfg.models.providers || {};
 const modelMap = cfg.agents.defaults.models || {};
 const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
@@ -308,7 +328,9 @@ if (action === 'check') {
   console.log(`Base URL: ${provider.baseUrl || '<none>'}`);
   console.log(`API mode: ${provider.api || '<none>'}`);
   console.log(`Configured provider.models: ${Array.isArray(provider.models) ? provider.models.length : 0}`);
+  const policyRefs = (getExplicitModelPolicyAllow() || []).filter((ref) => isProviderRef(ref, providerName));
   console.log(`agents.defaults.models refs: ${refs.length}`);
+  console.log(`agents.defaults.modelPolicy.allow refs: ${policyRefs.length}`);
   for (const ref of refs.slice(0, 20)) console.log(`- ${ref}`);
   process.exit(0);
 }
@@ -380,6 +402,12 @@ if (action === 'remove') {
     }
   }
   pruneModelSelection(cfg, providerName);
+  const modelPolicyAllow = removeProviderFromModelPolicy(previousDefaults, providerName);
+  const defaultsPatch = {
+    ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, previousDefaults),
+    models: modelRefPatch,
+  };
+  if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -387,12 +415,7 @@ if (action === 'remove') {
         [providerName]: null,
       },
     },
-    agents: {
-      defaults: {
-        ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, previousDefaults),
-        models: modelRefPatch,
-      },
-    },
+    agents: { defaults: defaultsPatch },
   });
   if (patchRes.status !== 0) {
     console.error('Failed to apply config patch');
@@ -497,6 +520,8 @@ if (action === 'sync') {
     repairedDefaults.changed ? { ...cfg.agents?.defaults, ...repairedDefaults._nextDefaults } : (cfg.agents?.defaults || {}),
     previousDefaults
   );
+  const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
+  if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {

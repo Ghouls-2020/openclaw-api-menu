@@ -466,6 +466,48 @@ function splitModelRef(ref) {
   return [text.slice(0, firstSlash), text.slice(firstSlash + 1)];
 }
 
+function getExplicitModelPolicyAllow(cfg = {}) {
+  const allow = cfg.agents?.defaults?.modelPolicy?.allow;
+  return Array.isArray(allow) && allow.length > 0 ? allow : null;
+}
+
+function isModelAllowedByPolicy(cfg, ref) {
+  const allow = getExplicitModelPolicyAllow(cfg);
+  if (!allow) return true;
+  const candidate = String(ref || '');
+  const alias = cfg.agents?.defaults?.models?.[candidate]?.alias;
+  return allow.some((entry) => {
+    const rule = String(entry || '');
+    if (rule.endsWith('*')) return candidate.startsWith(rule.slice(0, -1));
+    return candidate === rule || (typeof alias === 'string' && alias === rule);
+  });
+}
+
+function addProviderToModelPolicy(defaults = {}, providerId) {
+  const allow = Array.isArray(defaults?.modelPolicy?.allow) && defaults.modelPolicy.allow.length > 0
+    ? defaults.modelPolicy.allow
+    : null;
+  if (!allow) return null;
+  const wildcard = `${providerId}/*`;
+  return allow.includes(wildcard) ? [...allow] : [...allow, wildcard];
+}
+
+function rewriteProviderModelPolicy(defaults = {}, oldName, newName = '') {
+  const allow = Array.isArray(defaults?.modelPolicy?.allow) && defaults.modelPolicy.allow.length > 0
+    ? defaults.modelPolicy.allow
+    : null;
+  if (!allow) return null;
+  const rewritten = [];
+  for (const ref of allow) {
+    if (!isProviderRef(ref, oldName)) {
+      rewritten.push(ref);
+      continue;
+    }
+    if (newName) rewritten.push(rewriteProviderRef(ref, oldName, newName));
+  }
+  return [...new Set(rewritten)];
+}
+
 function getSessionStorePath(agentId = 'main') {
   const stateDir = STATE_DIR;
   return path.join(stateDir, 'agents', String(agentId || 'main'), 'sessions', 'sessions.json');
@@ -1964,7 +2006,8 @@ function formatProviderStatusForProviderList(status, options = {}) {
   return color('离线/不可达', C.red, C.bold);
 }
 
-function providersState() {
+function providersState(options = {}) {
+  const { respectPolicy = true } = options;
   const state = loadWorkspaceState();
   const cfg = state.cfg && typeof state.cfg === 'object' && !Array.isArray(state.cfg) ? state.cfg : null;
   if (!cfg) return [];
@@ -1972,7 +2015,13 @@ function providersState() {
   const providers = cfg.models?.providers || {};
   const modelConfig = cfg.agents?.defaults?.model;
   const primary = typeof modelConfig === 'string' ? modelConfig : (modelConfig?.primary || '');
-  return Object.entries(providers).map(([id, provider]) => ({
+  return Object.entries(providers)
+    .filter(([id, provider]) => {
+      if (!respectPolicy) return true;
+      const models = Array.isArray(provider?.models) ? provider.models : [];
+      return models.some((model) => isModelAllowedByPolicy(cfg, `${id}/${model.id}`));
+    })
+    .map(([id, provider]) => ({
     id,
     displayName: displayNames[id]
       || (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string'
@@ -2127,6 +2176,11 @@ function rewriteProviderRefsInDefaults(config, oldName, newName) {
   rewriteSelectionField('audioModel');
   rewriteSelectionField('videoGenerationModel');
   rewriteSelectionField('musicGenerationModel');
+  const policyAllow = rewriteProviderModelPolicy(defaults, oldName, newName);
+  if (policyAllow) {
+    if (!defaults.modelPolicy || typeof defaults.modelPolicy !== 'object') defaults.modelPolicy = {};
+    defaults.modelPolicy.allow = policyAllow;
+  }
 }
 
 function pruneModelSelection(config, name) {
@@ -2397,7 +2451,8 @@ async function switchDefaultModel(ask) {
 
     const fresh = readJson(CONFIG, {});
     const provider = fresh.models?.providers?.[chosenProvider.id];
-    const models = Array.isArray(provider?.models) ? provider.models : [];
+    const models = (Array.isArray(provider?.models) ? provider.models : [])
+      .filter((model) => isModelAllowedByPolicy(fresh, `${chosenProvider.id}/${model.id}`));
     if (!models.length) {
       warn('当前服务商下没有模型,请先同步模型。');
       continue;
@@ -2571,7 +2626,8 @@ async function removeProvider(ask) {
 }
 
 async function syncAllProviders(ask) {
-  const rows = providersState();
+  // 同步本身也是修复入口，必须包含当前被白名单漏掉的 Provider。
+  const rows = providersState({ respectPolicy: false });
   if (!rows.length) {
     warn('当前没有已配置的 API 提供商。');
     return;
@@ -2581,6 +2637,9 @@ async function syncAllProviders(ask) {
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
+  let nextModelPolicyAllow = getExplicitModelPolicyAllow(beforeCfg)
+    ? [...getExplicitModelPolicyAllow(beforeCfg)]
+    : null;
   const replacePaths = [];
   let successCount = 0, failCount = 0;
   let addedTotal = 0, removedTotal = 0, unchangedProviders = 0;
@@ -2621,6 +2680,10 @@ async function syncAllProviders(ask) {
       }
       replacePaths.push(`models.providers.${row.id}.models`);
       patchPayload.agents.defaults.models[`${row.id}/*`] = {};
+      if (nextModelPolicyAllow) {
+        const wildcard = `${row.id}/*`;
+        if (!nextModelPolicyAllow.includes(wildcard)) nextModelPolicyAllow.push(wildcard);
+      }
       for (const [ref, value] of Object.entries(beforeCfg.agents?.defaults?.models || {})) {
         if (ref === `${row.id}/*`) continue;
         const [pfx] = ref.split('/');
@@ -2646,6 +2709,7 @@ async function syncAllProviders(ask) {
   if (successCount > 0) {
     const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {}, beforeCfg.agents?.defaults || {});
     patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
+    if (nextModelPolicyAllow) patchPayload.agents.defaults.modelPolicy = { allow: nextModelPolicyAllow };
     info('正在写入配置，请稍等...');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
     if (patchRes.status !== 0) {
@@ -2876,7 +2940,13 @@ async function modifyProvider(ask) {
         patchPayload.agents = { defaults: { models: modelRefPatch } };
       }
       if (providerIdChanged) {
-        patchPayload.agents = { defaults: { ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, readJson(CONFIG, {}).agents?.defaults || {}), models: modelRefPatch } };
+        const defaultsPatch = {
+          ...buildDefaultSelectionPatch(cfg.agents?.defaults || {}, readJson(CONFIG, {}).agents?.defaults || {}),
+          models: modelRefPatch,
+        };
+        const modelPolicyAllow = getExplicitModelPolicyAllow(cfg);
+        if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+        patchPayload.agents = { defaults: defaultsPatch };
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
       const patchRes = applyConfigPatch(patchPayload);
@@ -2966,7 +3036,7 @@ async function quickSwitchFavorite(ask) {
     const provider = providers[providerId];
     if (!provider || !Array.isArray(provider.models)) continue;
     const exists = provider.models.some(m => m.id === modelId);
-    if (exists) {
+    if (exists && isModelAllowedByPolicy(cfg, item.ref)) {
       recent.push(item);
     }
   }
@@ -3129,12 +3199,14 @@ async function searchModelsGlobally(ask) {
         : providerId);
     const models = Array.isArray(provider?.models) ? provider.models : [];
     for (const model of models) {
+      const ref = `${providerId}/${model.id}`;
+      if (!isModelAllowedByPolicy(cfg, ref)) continue;
       allModels.push({
         providerId,
         providerDisplayName,
         id: model.id,
         name: model.name || model.id,
-        ref: `${providerId}/${model.id}`,
+        ref,
       });
     }
   }
