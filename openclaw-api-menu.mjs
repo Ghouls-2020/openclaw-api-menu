@@ -62,7 +62,7 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.103',
+    version: 'v0.0.104',
     updatedAt: '2026-09-01',
     summary: [
       '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
@@ -71,6 +71,7 @@ const MENU_VERSION_HISTORY = [
       '适配 2026.8.1 SQLite 会话目录,优先通过官方 sessions CLI 读取 Telegram 会话。',
       '清理 Telegram 会话改用官方 sessions delete,不再直接写入 SQLite 或误报会话文件不存在。',
       '通过 Telegram getChat 恢复群名,并在私聊列表显示所属 Agent。',
+      '适配 2026.8.x agents.entries 对象,保留旧版 agents.list 回退。',
     ],
   },
   {
@@ -555,10 +556,16 @@ function getSessionStorePath(agentId = 'main') {
 
 function getConfiguredAgentIds() {
   const cfg = readJson(CONFIG, {});
-  const ids = ['main'];
+  const ids = [];
+  // OpenClaw 2026.8.x stores configured agents as an entries object.
+  for (const id of Object.keys(cfg?.agents?.entries || {})) {
+    if (id.trim() && !ids.includes(id.trim())) ids.push(id.trim());
+  }
+  // Legacy compatibility for pre-2026.8 configs that used an array.
   for (const agent of Array.isArray(cfg?.agents?.list) ? cfg.agents.list : []) {
     if (typeof agent?.id === 'string' && agent.id.trim() && !ids.includes(agent.id.trim())) ids.push(agent.id.trim());
   }
+  if (!ids.includes('main')) ids.unshift('main');
   return ids;
 }
 
