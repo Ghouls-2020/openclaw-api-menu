@@ -68,19 +68,18 @@ const MENU_VERSION_HISTORY = [
       '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
       '补齐 utilityModel、mediaModels 与多 Agent 模型引用在 Provider ID 迁移/删除时的处理。',
       '模型菜单按生效白名单过滤,并兼容 Provider 通配符、精确模型和别名。',
-      '适配 2026.8.1 SQLite 会话目录,优先通过官方 sessions CLI 读取 Telegram 会话。',
-      '清理 Telegram 会话改用官方 sessions delete,不再直接写入 SQLite 或误报会话文件不存在。',
+      '适配 2026.8.1 SQLite 会话目录,仅通过官方 sessions CLI 读取 Telegram 会话。',
+      '清理 Telegram 会话改用官方 sessions delete,不直接写入 SQLite。',
       '通过 Telegram getChat 恢复群名,并在私聊列表显示所属 Agent。',
-      '适配 2026.8.x agents.entries 对象,保留旧版 agents.list 回退。',
+      '适配 2026.8.x agents.entries 对象。',
     ],
   },
   {
     version: 'v0.0.99',
     updatedAt: '2026-08-31',
     summary: [
-      '修复多 agent Telegram 会话识别:按各 agent 的 sessions.json 扫描,支持 weather 等非 main agent 群聊。',
       '会话菜单显示 agent 名称,避免 main 中的旧同名记录与 weather 实际会话混淆。',
-      'Telegram 会话模型切换优先通过 Gateway sessions.patch 写入,避免直接改 sessions.json 被 Gateway 缓存覆盖。',
+      'Telegram 会话模型切换通过 Gateway sessions.patch 写入,避免绕过 Gateway 缓存。',
     ],
   },
   {
@@ -106,7 +105,7 @@ const MENU_VERSION_HISTORY = [
     version: 'v0.0.93',
     updatedAt: '2026-08-07',
     summary: [
-      '修复 sessions.json 全量覆盖竞态条件：写入前重新读取并最小合并，避免覆盖 Gateway 并发写入。',
+      '模型切换使用官方 Gateway 接口,避免覆盖 Gateway 并发会话状态。',
     ],
   },
   {
@@ -283,7 +282,7 @@ const MENU_VERSION_HISTORY = [
     version: 'v0.0.69',
     updatedAt: '2026-06-08',
     summary: [
-      '清理群聊记录不再创建 sessions.json.bak.menu-delete 备份文件。',
+      '清理群聊记录使用官方会话删除接口。',
       '该操作仍只删除 OpenClaw 本地会话列表记录,不会退出或删除 Telegram 群。',
     ],
   },
@@ -549,22 +548,9 @@ function rewriteProviderRefsInAgentEntries(config, oldName, newName) {
   return changed;
 }
 
-function getSessionStorePath(agentId = 'main') {
-  const stateDir = STATE_DIR;
-  return path.join(stateDir, 'agents', String(agentId || 'main'), 'sessions', 'sessions.json');
-}
-
 function getConfiguredAgentIds() {
   const cfg = readJson(CONFIG, {});
-  const ids = [];
-  // OpenClaw 2026.8.x stores configured agents as an entries object.
-  for (const id of Object.keys(cfg?.agents?.entries || {})) {
-    if (id.trim() && !ids.includes(id.trim())) ids.push(id.trim());
-  }
-  // Legacy compatibility for pre-2026.8 configs that used an array.
-  for (const agent of Array.isArray(cfg?.agents?.list) ? cfg.agents.list : []) {
-    if (typeof agent?.id === 'string' && agent.id.trim() && !ids.includes(agent.id.trim())) ids.push(agent.id.trim());
-  }
+  const ids = Object.keys(cfg?.agents?.entries || {}).filter((id) => id.trim());
   if (!ids.includes('main')) ids.unshift('main');
   return ids;
 }
@@ -572,35 +558,6 @@ function getConfiguredAgentIds() {
 function getAgentIdFromSessionKey(key) {
   const match = String(key || '').match(/^agent:([^:]+):/);
   return match?.[1] || 'main';
-}
-
-function getSessionDisplayNameFromTrajectory(entry = {}, agentId = 'main') {
-  const sessionId = entry.sessionId;
-  if (!sessionId) return '';
-  const file = path.join(getSessionStorePath(agentId), '..', `${sessionId}.trajectory.jsonl`);
-  try {
-    if (!fs.existsSync(file)) return '';
-    const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-80).reverse();
-    for (const line of lines) {
-      let obj; try { obj = JSON.parse(line); } catch { continue; }
-      const messages = obj?.data?.messagesSnapshot || obj?.data?.messages || [];
-      for (const msg of messages) {
-        if (msg?.customType !== 'openclaw.runtime-context' || typeof msg.content !== 'string') continue;
-        const subject = msg.content.match(/"group_subject"\s*:\s*"([^"]+)"/)?.[1];
-        if (subject) return subject;
-        const label = msg.content.match(/"conversation_label"\s*:\s*"([^"]+)"/)?.[1];
-        if (label) return label.replace(/\s+id:-?\d+\s*$/, '').trim();
-      }
-      const promptText = obj?.data?.systemPrompt || '';
-      if (typeof promptText === 'string') {
-        const subject = promptText.match(/"group_subject"\s*:\s*"([^"]+)"/)?.[1];
-        if (subject) return subject;
-        const label = promptText.match(/"conversation_label"\s*:\s*"([^"]+)"/)?.[1];
-        if (label) return label.replace(/\s+id:-?\d+\s*$/, '').trim();
-      }
-    }
-  } catch {}
-  return '';
 }
 
 function hashSecret(value) {
@@ -808,8 +765,7 @@ function getActiveTelegramSessionFromStatus() {
 }
 
 function listSyncableTelegramSessions(limit = 30) {
-  // OpenClaw 2026.8.1 stores sessions in per-agent SQLite databases; use the
-  // official CLI catalog first and retain the legacy JSON fallback for older installs.
+  // OpenClaw 2026.8.1 stores sessions in SQLite; use only the official catalog.
   try {
     const res = runCommand('openclaw', ['sessions', '--json', '--all-agents', '--limit', 'all'], {
       cwd: WORKSPACE,
@@ -817,7 +773,7 @@ function listSyncableTelegramSessions(limit = 30) {
       maxBuffer: 8 * 1024 * 1024,
     });
     const data = JSON.parse(`${res.stdout || ''}`.trim() || '{}');
-    const cliRows = (Array.isArray(data?.sessions) ? data.sessions : [])
+    const rows = (Array.isArray(data?.sessions) ? data.sessions : [])
       .filter((session) => /^agent:[^:]+:telegram:(group|direct):/.test(String(session?.key || '')))
       .map((session) => ({
         key: session.key,
@@ -830,26 +786,13 @@ function listSyncableTelegramSessions(limit = 30) {
           modelProvider: session.modelProvider,
         },
         agentId: session.agentId || getAgentIdFromSessionKey(session.key),
-        storePath: session.storePath || '',
         updatedAt: Number(session.updatedAt || 0),
       }))
       .sort((a, b) => b.updatedAt - a.updatedAt);
-    if (cliRows.length) return { stores: [], rows: cliRows.slice(0, limit) };
-  } catch {}
-
-  const stores = [];
-  const rows = [];
-  for (const agentId of getConfiguredAgentIds()) {
-    const storePath = getSessionStorePath(agentId);
-    const store = readJson(storePath, {});
-    stores.push({ agentId, storePath, store });
-    for (const [key, entry] of Object.entries(store || {})) {
-      if (!/^agent:[^:]+:telegram:(group|direct):/.test(String(key))) continue;
-      rows.push({ key, entry: entry || {}, agentId, storePath, updatedAt: Number(entry?.updatedAt || 0) });
-    }
+    return { rows: rows.slice(0, limit) };
+  } catch (err) {
+    return { rows: [], error: String(err?.message || '官方会话目录读取失败') };
   }
-  rows.sort((a, b) => b.updatedAt - a.updatedAt);
-  return { stores, rows: rows.slice(0, limit) };
 }
 
 function patchSessionModelViaGateway(sessionKey, ref) {
@@ -882,132 +825,39 @@ function patchSessionModelViaGateway(sessionKey, ref) {
   return { ok: true };
 }
 
-function applySessionModelOverrideInStore(store, sessionKey, ref) {
-  const [providerId, modelId] = splitModelRef(ref);
-  if (!providerId || !modelId) return { ok: false, reason: `模型引用无效:${ref}` };
-  const entry = store?.[sessionKey];
-  if (!entry || typeof entry !== 'object') return { ok: false, reason: '会话不存在。' };
-  entry.providerOverride = providerId;
-  entry.modelOverride = modelId;
-  entry.modelOverrideSource = 'user';
-  delete entry.model;
-  delete entry.modelProvider;
-  delete entry.contextTokens;
-  delete entry.authProfileOverride;
-  delete entry.authProfileOverrideSource;
-  delete entry.authProfileOverrideCompactionCount;
-  delete entry.fallbackNoticeSelectedModel;
-  delete entry.fallbackNoticeActiveModel;
-  delete entry.fallbackNoticeReason;
-  entry.liveModelSwitchPending = true;
-  entry.updatedAt = Date.now();
-  return { ok: true };
-}
-
-function verifySessionModelOverrides(storePath, sessionKeys, ref) {
-  const [providerId, modelId] = splitModelRef(ref);
-  const failed = [];
-  const verifyOnce = () => {
-    const latest = readJson(storePath, {});
-    return sessionKeys.filter((key) => {
-      const entry = latest?.[key];
-      return !entry || entry.providerOverride !== providerId || entry.modelOverride !== modelId;
-    });
-  };
-  let mismatched = verifyOnce();
-  if (mismatched.length && typeof SharedArrayBuffer !== 'undefined' && typeof Atomics?.wait === 'function') {
-    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300); } catch {}
-    mismatched = verifyOnce();
-  }
-  for (const key of mismatched) failed.push({ key, reason: '写入后校验失败,可能被 Gateway 运行时会话缓存覆盖。' });
-  return failed;
-}
-
 function syncSessionModelOverrides(sessionKeys, ref) {
-  const { stores } = listSyncableTelegramSessions(1000);
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   let synced = 0;
   const syncedKeys = [];
-  const fallbackRows = [];
   const failed = [];
   for (const key of keys) {
-    const gatewayResult = patchSessionModelViaGateway(key, ref);
-    if (gatewayResult.ok) {
-      synced += 1;
-      syncedKeys.push(key);
-      continue;
-    }
-    if (!gatewayResult.gatewayUnavailable) {
-      failed.push({ key, reason: gatewayResult.reason });
-      continue;
-    }
-    const storeInfo = stores.find((item) => Object.prototype.hasOwnProperty.call(item.store, key));
-    const result = applySessionModelOverrideInStore(storeInfo?.store, key, ref);
+    const result = patchSessionModelViaGateway(key, ref);
     if (result.ok) {
       synced += 1;
       syncedKeys.push(key);
-      fallbackRows.push({ key, storeInfo });
     } else {
       failed.push({ key, reason: result.reason });
     }
   }
-  let backup = '';
-  let verifyFailed = [];
-  for (const group of new Map(fallbackRows.map((row) => [row.storeInfo?.storePath, row])).entries()) {
-    const [storePath] = group;
-    const rowsForStore = fallbackRows.filter((row) => row.storeInfo?.storePath === storePath);
-    if (!storePath) continue;
-    const storeInfo = rowsForStore[0].storeInfo;
-    backup = backup || `${storePath}.bak.menu-sync-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-    fs.copyFileSync(storePath, backup);
-    // 写入前重新读取一次,最小合并,避免覆盖 Gateway 并发写入的其他 session
-    const freshStore = readJson(storePath, {});
-    for (const row of rowsForStore) {
-      if (storeInfo.store[row.key]) freshStore[row.key] = storeInfo.store[row.key];
-    }
-    writeJson(storePath, freshStore);
-    verifyFailed.push(...verifySessionModelOverrides(storePath, rowsForStore.map((row) => row.key), ref));
-  }
-  return { ok: failed.length === 0 && verifyFailed.length === 0, synced, syncedKeys, failed, verifyFailed, backup };
+  return { ok: failed.length === 0, synced, syncedKeys, failed, verifyFailed: [], backup: '' };
 }
 
 function deleteTelegramSessionRecords(sessionKeys) {
   const keys = [...new Set(sessionKeys.filter(Boolean))];
   if (!keys.length) return { ok: true, deleted: 0 };
-
-  // OpenClaw 2026.8.1 owns session state in SQLite. Delete through the
-  // official Gateway-backed CLI so transcripts and live artifacts are cleaned up safely.
   const listed = listSyncableTelegramSessions(1000).rows;
-  if (listed.some((row) => row.storePath === '' || row.entry?.sessionId)) {
-    const rows = keys.map((key) => listed.find((row) => row.key === key)).filter(Boolean);
-    const failed = [];
-    let deleted = 0;
-    for (const row of rows) {
-      const args = ['sessions', 'delete', row.key, '--yes', '--json'];
-      if (row.agentId) args.push('--agent', row.agentId);
-      const result = runCommand('openclaw', args, { cwd: WORKSPACE, timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
-      if (result.status === 0) deleted += 1;
-      else failed.push(String(result.stderr || result.stdout || '官方会话删除失败').trim());
-    }
-    if (rows.length) return { ok: failed.length === 0, deleted, failed };
-  }
-
-  // Legacy OpenClaw versions used per-agent sessions.json; retain a safe fallback.
-  const stores = listSyncableTelegramSessions(1000).stores;
+  const rows = keys.map((key) => listed.find((row) => row.key === key)).filter(Boolean);
+  const failed = [];
   let deleted = 0;
-  for (const storeInfo of stores) {
-    const existingKeys = keys.filter((key) => Object.prototype.hasOwnProperty.call(storeInfo.store || {}, key));
-    if (!existingKeys.length) continue;
-    const freshStore = readJson(storeInfo.storePath, {});
-    for (const key of existingKeys) {
-      if (Object.prototype.hasOwnProperty.call(freshStore, key)) {
-        delete freshStore[key];
-        deleted += 1;
-      }
-    }
-    writeJson(storeInfo.storePath, freshStore);
+  for (const row of rows) {
+    const args = ['sessions', 'delete', row.key, '--yes', '--json'];
+    if (row.agentId) args.push('--agent', row.agentId);
+    const result = runCommand('openclaw', args, { cwd: WORKSPACE, timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
+    if (result.status === 0) deleted += 1;
+    else failed.push(String(result.stderr || result.stdout || '官方会话删除失败').trim());
   }
-  return deleted ? { ok: true, deleted } : { ok: false, deleted: 0, reason: '会话不存在或无法定位会话存储。' };
+  if (!rows.length) failed.push('官方会话目录中未找到目标会话。');
+  return { ok: failed.length === 0, deleted, failed };
 }
 
 function getPinnedTelegramSessionRank(key, entry = {}) {
