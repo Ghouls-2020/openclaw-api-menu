@@ -61,12 +61,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.100',
+    version: 'v0.0.101',
     updatedAt: '2026-09-01',
     summary: [
       '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
       '补齐 utilityModel、mediaModels 与多 Agent 模型引用在 Provider ID 迁移/删除时的处理。',
       '模型菜单按生效白名单过滤,并兼容 Provider 通配符、精确模型和别名。',
+      '适配 2026.8.1 SQLite 会话目录,优先通过官方 sessions CLI 读取 Telegram 会话。',
     ],
   },
   {
