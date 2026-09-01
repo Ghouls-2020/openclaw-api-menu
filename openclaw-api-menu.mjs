@@ -61,6 +61,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.0.100',
+    updatedAt: '2026-09-01',
+    summary: [
+      '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
+      '补齐 utilityModel、mediaModels 与多 Agent 模型引用在 Provider ID 迁移/删除时的处理。',
+      '模型菜单按生效白名单过滤,并兼容 Provider 通配符、精确模型和别名。',
+    ],
+  },
+  {
     version: 'v0.0.99',
     updatedAt: '2026-08-31',
     summary: [
@@ -466,13 +475,14 @@ function splitModelRef(ref) {
   return [text.slice(0, firstSlash), text.slice(firstSlash + 1)];
 }
 
-function getExplicitModelPolicyAllow(cfg = {}) {
-  const allow = cfg.agents?.defaults?.modelPolicy?.allow;
+function getExplicitModelPolicyAllow(cfg = {}, agentId = '') {
+  const agentAllow = agentId ? cfg.agents?.entries?.[agentId]?.modelPolicy?.allow : null;
+  const allow = Array.isArray(agentAllow) ? agentAllow : cfg.agents?.defaults?.modelPolicy?.allow;
   return Array.isArray(allow) && allow.length > 0 ? allow : null;
 }
 
-function isModelAllowedByPolicy(cfg, ref) {
-  const allow = getExplicitModelPolicyAllow(cfg);
+function isModelAllowedByPolicy(cfg, ref, agentId = '') {
+  const allow = getExplicitModelPolicyAllow(cfg, agentId);
   if (!allow) return true;
   const candidate = String(ref || '');
   const alias = cfg.agents?.defaults?.models?.[candidate]?.alias;
@@ -506,6 +516,32 @@ function rewriteProviderModelPolicy(defaults = {}, oldName, newName = '') {
     if (newName) rewritten.push(rewriteProviderRef(ref, oldName, newName));
   }
   return [...new Set(rewritten)];
+}
+
+function rewriteProviderRefsDeep(value, oldName, newName) {
+  if (typeof value === 'string') return rewriteProviderRef(value, oldName, newName);
+  if (Array.isArray(value)) return value.map((item) => rewriteProviderRefsDeep(item, oldName, newName));
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    const nextKey = isProviderRef(key, oldName) ? rewriteProviderRef(key, oldName, newName) : key;
+    result[nextKey] = rewriteProviderRefsDeep(item, oldName, newName);
+  }
+  return result;
+}
+
+function rewriteProviderRefsInAgentEntries(config, oldName, newName) {
+  const entries = config.agents?.entries;
+  if (!entries || typeof entries !== 'object') return {};
+  const changed = {};
+  for (const [agentId, entry] of Object.entries(entries)) {
+    const next = rewriteProviderRefsDeep(entry, oldName, newName);
+    if (JSON.stringify(next) !== JSON.stringify(entry)) {
+      entries[agentId] = next;
+      changed[agentId] = next;
+    }
+  }
+  return changed;
 }
 
 function getSessionStorePath(agentId = 'main') {
@@ -902,11 +938,16 @@ async function confirmSyncTelegramSessions(ask, ref) {
   await refreshTelegramBotNameFromApi();
   while (true) {
     const { rows: rawRows } = listSyncableTelegramSessions(1000);
-    const rows = sortTelegramSessionsForMenu(rawRows);
+    const cfg = readJson(CONFIG, {});
+    const allowedRows = rawRows.filter((row) => isModelAllowedByPolicy(cfg, ref, row.agentId || getAgentIdFromSessionKey(row.key)));
+    const blockedCount = rawRows.length - allowedRows.length;
+    const rows = sortTelegramSessionsForMenu(allowedRows);
     if (!rows.length) {
-      info('未找到可同步的 Telegram 群/私聊会话,将只设置默认模型。');
+      if (rawRows.length && blockedCount) warn('该模型不在现有 Telegram 会话所属 Agent 的 modelPolicy.allow 中。');
+      else info('未找到可同步的 Telegram 群/私聊会话,将只设置默认模型。');
       return { action: 'selected', skipped: true, sessionKeys: [], setDefaultOnly: true };
     }
+    if (blockedCount) info(`已隐藏 ${blockedCount} 个无权使用该模型的 Agent 会话。`);
 
     console.log(color('选择模型应用范围', C.yellow, C.bold));
     const activeSession = getActiveTelegramSessionFromStatus();
@@ -2176,6 +2217,10 @@ function rewriteProviderRefsInDefaults(config, oldName, newName) {
   rewriteSelectionField('audioModel');
   rewriteSelectionField('videoGenerationModel');
   rewriteSelectionField('musicGenerationModel');
+  rewriteSelectionField('utilityModel');
+  for (const field of ['mediaModels']) {
+    if (defaults[field] !== undefined) defaults[field] = rewriteProviderRefsDeep(defaults[field], oldName, newName);
+  }
   const policyAllow = rewriteProviderModelPolicy(defaults, oldName, newName);
   if (policyAllow) {
     if (!defaults.modelPolicy || typeof defaults.modelPolicy !== 'object') defaults.modelPolicy = {};
@@ -2215,11 +2260,28 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('audioModel');
   pruneSelectionField('videoGenerationModel');
   pruneSelectionField('musicGenerationModel');
+  pruneSelectionField('utilityModel');
+  if (defaults.mediaModels !== undefined) {
+    const removeRefs = (value) => {
+      if (typeof value === 'string') return isProviderRef(value, name) ? null : value;
+      if (Array.isArray(value)) return value.map(removeRefs).filter((item) => item !== null);
+      if (!value || typeof value !== 'object') return value;
+      const out = {};
+      for (const [key, item] of Object.entries(value)) {
+        const next = removeRefs(item);
+        if (next !== null) out[key] = next;
+      }
+      return out;
+    };
+    const remaining = removeRefs(defaults.mediaModels);
+    if (remaining && Object.keys(remaining).length) defaults.mediaModels = remaining;
+    else delete defaults.mediaModels;
+  }
 }
 
 function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
     if (Object.prototype.hasOwnProperty.call(defaults, field)) {
       patch[field] = defaults[field];
     } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
@@ -2282,7 +2344,7 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
     repairString(field);
     repairObject(field);
   }
@@ -2895,12 +2957,14 @@ async function modifyProvider(ask) {
       }
 
       const originalModelRefs = { ...(cfg.agents?.defaults?.models || {}) };
+      const originalAgentEntries = JSON.parse(JSON.stringify(cfg.agents?.entries || {}));
 
       if (providerIdChanged) {
         const providers = cfg.models.providers || {};
         providers[newProviderId] = providers[oldProviderId];
         delete providers[oldProviderId];
         rewriteProviderRefsInDefaults(cfg, oldProviderId, newProviderId);
+        rewriteProviderRefsInAgentEntries(cfg, oldProviderId, newProviderId);
         if (displayNames[oldProviderId] !== undefined) {
           displayNames[newProviderId] = displayNames[oldProviderId];
           delete displayNames[oldProviderId];
@@ -2925,8 +2989,9 @@ async function modifyProvider(ask) {
       const modelRefPatch = {};
       if (providerIdChanged) {
         for (const [key, value] of Object.entries(originalModelRefs)) {
-          if (!key.startsWith(`${oldProviderId}/`)) continue;
-          const suffix = key.slice(oldProviderId.length + 1);
+          const [refProvider, ...refParts] = key.split('/');
+          if (String(refProvider).toLowerCase() !== String(oldProviderId).toLowerCase()) continue;
+          const suffix = refParts.join('/');
           modelRefPatch[key] = null;
           modelRefPatch[`${newProviderId}/${suffix}`] = value;
         }
@@ -2946,7 +3011,12 @@ async function modifyProvider(ask) {
         };
         const modelPolicyAllow = getExplicitModelPolicyAllow(cfg);
         if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+        const agentEntriesPatch = {};
+        for (const [agentId, entry] of Object.entries(cfg.agents?.entries || {})) {
+          if (JSON.stringify(entry) !== JSON.stringify(originalAgentEntries[agentId])) agentEntriesPatch[agentId] = entry;
+        }
         patchPayload.agents = { defaults: defaultsPatch };
+        if (Object.keys(agentEntriesPatch).length) patchPayload.agents.entries = agentEntriesPatch;
       }
       if (providerIdChanged) patchPayload.models.providers[oldProviderId] = null;
       const patchRes = applyConfigPatch(patchPayload);

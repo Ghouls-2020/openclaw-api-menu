@@ -179,14 +179,52 @@ function isProviderRef(ref, name) {
   return typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === name.toLowerCase();
 }
 
+function rewriteProviderRef(ref, oldName, newName) {
+  if (!isProviderRef(ref, oldName)) return ref;
+  const slash = String(ref).indexOf('/');
+  return `${newName}/${String(ref).slice(slash + 1)}`;
+}
+
+function getPrimaryRef(value) {
+  if (typeof value === 'string') return value;
+  return value && typeof value === 'object' ? value.primary : '';
+}
+
 function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
     if (Object.prototype.hasOwnProperty.call(defaults, field)) {
       patch[field] = defaults[field];
     } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
       patch[field] = null;
     }
+  }
+  return patch;
+}
+
+function rewriteRefsDeep(value, oldName, newName = '', remove = false) {
+  if (typeof value === 'string') {
+    if (!isProviderRef(value, oldName)) return value;
+    return remove ? null : rewriteProviderRef(value, oldName, newName);
+  }
+  if (Array.isArray(value)) return value.map((item) => rewriteRefsDeep(item, oldName, newName, remove)).filter((item) => item !== null);
+  if (!value || typeof value !== 'object') return value;
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    const keyMatches = isProviderRef(key, oldName);
+    if (remove && keyMatches) continue;
+    const nextKey = keyMatches ? rewriteProviderRef(key, oldName, newName) : key;
+    const next = rewriteRefsDeep(item, oldName, newName, remove);
+    if (next !== null) result[nextKey] = next;
+  }
+  return result;
+}
+
+function buildAgentEntriesPatch(entries = {}, oldName, newName = '', remove = false) {
+  const patch = {};
+  for (const [agentId, entry] of Object.entries(entries || {})) {
+    const next = rewriteRefsDeep(entry, oldName, newName, remove);
+    if (JSON.stringify(next) !== JSON.stringify(entry)) patch[agentId] = next;
   }
   return patch;
 }
@@ -244,7 +282,7 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
     repairString(field);
     repairObject(field);
   }
@@ -283,6 +321,12 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('audioModel');
   pruneSelectionField('videoGenerationModel');
   pruneSelectionField('musicGenerationModel');
+  pruneSelectionField('utilityModel');
+  if (defaults.mediaModels !== undefined) {
+    const nextMediaModels = rewriteRefsDeep(defaults.mediaModels, name, '', true);
+    if (nextMediaModels && Object.keys(nextMediaModels).length) defaults.mediaModels = nextMediaModels;
+    else delete defaults.mediaModels;
+  }
 }
 
 function guessInputCaps(id) {
@@ -389,6 +433,13 @@ if (action === 'remove') {
       process.exit(3);
     }
   }
+  for (const [agentId, entry] of Object.entries(cfg.agents?.entries || {})) {
+    const agentPrimary = getPrimaryRef(entry?.model);
+    if (isProviderRef(agentPrimary, providerName)) {
+      console.error(`Refusing to remove ${providerName}: agent ${agentId} is still using it (${agentPrimary})`);
+      process.exit(3);
+    }
+  }
   let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
   delete cfg.models.providers[providerName];
   delete displayNames[providerName];
@@ -408,6 +459,9 @@ if (action === 'remove') {
     models: modelRefPatch,
   };
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+  const agentEntriesPatch = buildAgentEntriesPatch(cfg.agents?.entries, providerName, '', true);
+  const agentsPatch = { defaults: defaultsPatch };
+  if (Object.keys(agentEntriesPatch).length) agentsPatch.entries = agentEntriesPatch;
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -415,7 +469,7 @@ if (action === 'remove') {
         [providerName]: null,
       },
     },
-    agents: { defaults: defaultsPatch },
+    agents: agentsPatch,
   });
   if (patchRes.status !== 0) {
     console.error('Failed to apply config patch');

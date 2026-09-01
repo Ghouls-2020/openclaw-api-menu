@@ -192,12 +192,30 @@ function buildModelPolicyWithProvider(defaults, name) {
   return [...allow, wildcard];
 }
 
+function buildAgentPolicyPatches(entries = {}, name) {
+  const patches = {};
+  for (const [agentId, entry] of Object.entries(entries || {})) {
+    const allow = entry?.modelPolicy?.allow;
+    if (!Array.isArray(allow) || allow.length === 0) continue;
+    const next = buildModelPolicyWithProvider(entry, name);
+    if (next && JSON.stringify(next) !== JSON.stringify(allow)) patches[agentId] = { modelPolicy: { allow: next } };
+  }
+  return patches;
+}
+
+function buildAgentsPatch(defaultsPatch, name) {
+  const agentsPatch = { defaults: defaultsPatch };
+  const entries = buildAgentPolicyPatches(cfg.agents?.entries, name);
+  if (Object.keys(entries).length) agentsPatch.entries = entries;
+  return agentsPatch;
+}
+
 // 幂等重试只补齐目录和显式白名单，不覆盖已有 Provider 的 URL、密钥或模型列表。
 if (cfg.models.providers[providerName]) {
   const defaultsPatch = { models: { [`${providerName}/*`]: {} } };
   const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
-  const patchRes = runConfigPatch({ agents: { defaults: defaultsPatch } });
+  const patchRes = runConfigPatch({ agents: buildAgentsPatch(defaultsPatch, providerName) });
   if (patchRes.status !== 0) {
     console.error('Failed to repair existing provider config');
     if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
@@ -274,7 +292,7 @@ const patchRes = runConfigPatch({
       },
     },
   },
-  agents: { defaults: defaultsPatch },
+  agents: buildAgentsPatch(defaultsPatch, providerName),
 });
 if (patchRes.status !== 0) {
   console.error('Failed to apply config patch');
