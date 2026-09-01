@@ -19,6 +19,7 @@ const LOCAL_MENU_CONFIG = path.join(STATE_DIR, 'openclaw-api-menu.local.json');
 const TELEGRAM_BOT_NAME_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
 const TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS = 8000;
 const telegramBotNameCache = { value: '', tokenHash: '', ts: 0 };
+const telegramChatNameCache = new Map();
 const STATUS_CACHE_TTL_MS = 30 * 1000; // Provider状态缓存30秒,平衡检测频率和用户体验
 const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
@@ -61,7 +62,7 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.102',
+    version: 'v0.0.103',
     updatedAt: '2026-09-01',
     summary: [
       '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
@@ -69,6 +70,7 @@ const MENU_VERSION_HISTORY = [
       '模型菜单按生效白名单过滤,并兼容 Provider 通配符、精确模型和别名。',
       '适配 2026.8.1 SQLite 会话目录,优先通过官方 sessions CLI 读取 Telegram 会话。',
       '清理 Telegram 会话改用官方 sessions delete,不再直接写入 SQLite 或误报会话文件不存在。',
+      '通过 Telegram getChat 恢复群名,并在私聊列表显示所属 Agent。',
     ],
   },
   {
@@ -662,6 +664,40 @@ async function refreshTelegramBotNameFromApi() {
   }
 }
 
+
+async function hydrateTelegramSessionNames(rows = []) {
+  const token = getTelegramBotToken();
+  if (!token) return rows;
+  const targets = [...new Set(rows
+    .filter((row) => /^agent:[^:]+:telegram:(group|direct):/.test(String(row.key || '')))
+    .map((row) => ({ row, target: extractSessionTargetId(row.key) }))
+    .filter(({ target }) => target))];
+  await Promise.all(targets.map(async ({ row, target }) => {
+    const cached = telegramChatNameCache.get(String(target));
+    if (cached && Date.now() - cached.ts < TELEGRAM_BOT_NAME_CACHE_TTL_MS) {
+      row.entry = { ...row.entry, ...cached.entry };
+      return;
+    }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), TELEGRAM_BOT_NAME_FETCH_TIMEOUT_MS);
+      const res = await fetch(`https://api.telegram.org/bot${token}/getChat?chat_id=${encodeURIComponent(target)}`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok || !data.result) return;
+      const chat = data.result;
+      const name = cleanSessionDisplayName(chat.title || [chat.first_name, chat.last_name].filter(Boolean).join(' ') || chat.username || '');
+      if (!name) return;
+      const entry = /^-?\d+$/.test(String(target))
+        ? { groupSubject: name, chatTitle: name }
+        : { peerName: name, chatTitle: name };
+      telegramChatNameCache.set(String(target), { entry, ts: Date.now() });
+      row.entry = { ...row.entry, ...entry };
+    } catch {}
+  }));
+  return rows;
+}
+
 function getDirectChatDisplayName(target) {
   const botName = getCachedTelegramBotName();
   if (botName) return botName;
@@ -713,9 +749,9 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
     const [, agentId, , kind, target] = match;
     const friendlyName = getSessionFriendlyName(key, entry);
     if (kind === 'direct') {
-      const directName = getDirectChatDisplayName(target) || friendlyName;
-      if (directName && directName !== target) return `TG私聊 【${directName}】`;
-      return `TG私聊用户`;
+      const directName = friendlyName || getDirectChatDisplayName(target);
+      if (directName && directName !== target) return `TG私聊 【${directName}】 [${agentId}]`;
+      return `TG私聊用户 [${agentId}]`;
     }
     if (kind === 'group') {
       if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】 [${agentId}]`;
@@ -998,6 +1034,7 @@ async function confirmSyncTelegramSessions(ask, ref) {
     const allowedRows = rawRows.filter((row) => isModelAllowedByPolicy(cfg, ref, row.agentId || getAgentIdFromSessionKey(row.key)));
     const blockedCount = rawRows.length - allowedRows.length;
     const rows = sortTelegramSessionsForMenu(allowedRows);
+    await hydrateTelegramSessionNames(rows);
     if (!rows.length) {
       if (rawRows.length && blockedCount) warn('该模型不在现有 Telegram 会话所属 Agent 的 modelPolicy.allow 中。');
       else info('未找到可同步的 Telegram 群/私聊会话,将只设置默认模型。');
