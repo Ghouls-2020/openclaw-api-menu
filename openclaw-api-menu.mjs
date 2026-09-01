@@ -750,7 +750,7 @@ function formatSessionModelLabel(entry = {}) {
 
 function getActiveTelegramSessionFromStatus() {
   try {
-    const res = runCommand('openclaw', ['sessions', '--json', '--active', '5'], { cwd: WORKSPACE, timeout: 8000 });
+    const res = runCommand('openclaw', ['sessions', '--json', '--all-agents', '--active', '5'], { cwd: WORKSPACE, timeout: 8000 });
     const data = JSON.parse(`${res.stdout || ''}`.trim() || '{}');
     const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
     const currentGroups = sessions
@@ -763,6 +763,35 @@ function getActiveTelegramSessionFromStatus() {
 }
 
 function listSyncableTelegramSessions(limit = 30) {
+  // OpenClaw 2026.8.1 stores sessions in per-agent SQLite databases; use the
+  // official CLI catalog first and retain the legacy JSON fallback for older installs.
+  try {
+    const res = runCommand('openclaw', ['sessions', '--json', '--all-agents', '--limit', 'all'], {
+      cwd: WORKSPACE,
+      timeout: 10000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const data = JSON.parse(`${res.stdout || ''}`.trim() || '{}');
+    const cliRows = (Array.isArray(data?.sessions) ? data.sessions : [])
+      .filter((session) => /^agent:[^:]+:telegram:(group|direct):/.test(String(session?.key || '')))
+      .map((session) => ({
+        key: session.key,
+        entry: {
+          updatedAt: session.updatedAt,
+          sessionId: session.sessionId,
+          providerOverride: session.providerOverride,
+          modelOverride: session.modelOverride,
+          model: session.model,
+          modelProvider: session.modelProvider,
+        },
+        agentId: session.agentId || getAgentIdFromSessionKey(session.key),
+        storePath: session.storePath || '',
+        updatedAt: Number(session.updatedAt || 0),
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    if (cliRows.length) return { stores: [], rows: cliRows.slice(0, limit) };
+  } catch {}
+
   const stores = [];
   const rows = [];
   for (const agentId of getConfiguredAgentIds()) {
