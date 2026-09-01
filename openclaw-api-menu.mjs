@@ -61,13 +61,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
-    version: 'v0.0.101',
+    version: 'v0.0.102',
     updatedAt: '2026-09-01',
     summary: [
       '适配 OpenClaw 2026.8.1 模型白名单:新增、删除、同步和 Provider ID 迁移会维护 modelPolicy.allow。',
       '补齐 utilityModel、mediaModels 与多 Agent 模型引用在 Provider ID 迁移/删除时的处理。',
       '模型菜单按生效白名单过滤,并兼容 Provider 通配符、精确模型和别名。',
       '适配 2026.8.1 SQLite 会话目录,优先通过官方 sessions CLI 读取 Telegram 会话。',
+      '清理 Telegram 会话改用官方 sessions delete,不再直接写入 SQLite 或误报会话文件不存在。',
     ],
   },
   {
@@ -928,17 +929,42 @@ function syncSessionModelOverrides(sessionKeys, ref) {
 }
 
 function deleteTelegramSessionRecords(sessionKeys) {
-  const { storePath, store } = listSyncableTelegramSessions(1000);
-  if (!fs.existsSync(storePath)) return { ok: false, deleted: 0, reason: `会话文件不存在:${storePath}` };
   const keys = [...new Set(sessionKeys.filter(Boolean))];
-  const existingKeys = keys.filter((key) => store && Object.prototype.hasOwnProperty.call(store, key));
-  if (!existingKeys.length) return { ok: true, deleted: 0, storePath };
-  for (const key of existingKeys) delete store[key];
-  // 写入前重新读取一次,最小合并,避免 Gateway 并发写入的 session 被全量覆盖
-  const freshStore = readJson(storePath, {});
-  for (const key of existingKeys) delete freshStore[key];
-  writeJson(storePath, freshStore);
-  return { ok: true, deleted: existingKeys.length, storePath };
+  if (!keys.length) return { ok: true, deleted: 0 };
+
+  // OpenClaw 2026.8.1 owns session state in SQLite. Delete through the
+  // official Gateway-backed CLI so transcripts and live artifacts are cleaned up safely.
+  const listed = listSyncableTelegramSessions(1000).rows;
+  if (listed.some((row) => row.storePath === '' || row.entry?.sessionId)) {
+    const rows = keys.map((key) => listed.find((row) => row.key === key)).filter(Boolean);
+    const failed = [];
+    let deleted = 0;
+    for (const row of rows) {
+      const args = ['sessions', 'delete', row.key, '--yes', '--json'];
+      if (row.agentId) args.push('--agent', row.agentId);
+      const result = runCommand('openclaw', args, { cwd: WORKSPACE, timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
+      if (result.status === 0) deleted += 1;
+      else failed.push(String(result.stderr || result.stdout || '官方会话删除失败').trim());
+    }
+    if (rows.length) return { ok: failed.length === 0, deleted, failed };
+  }
+
+  // Legacy OpenClaw versions used per-agent sessions.json; retain a safe fallback.
+  const stores = listSyncableTelegramSessions(1000).stores;
+  let deleted = 0;
+  for (const storeInfo of stores) {
+    const existingKeys = keys.filter((key) => Object.prototype.hasOwnProperty.call(storeInfo.store || {}, key));
+    if (!existingKeys.length) continue;
+    const freshStore = readJson(storeInfo.storePath, {});
+    for (const key of existingKeys) {
+      if (Object.prototype.hasOwnProperty.call(freshStore, key)) {
+        delete freshStore[key];
+        deleted += 1;
+      }
+    }
+    writeJson(storeInfo.storePath, freshStore);
+  }
+  return deleted ? { ok: true, deleted } : { ok: false, deleted: 0, reason: '会话不存在或无法定位会话存储。' };
 }
 
 function getPinnedTelegramSessionRank(key, entry = {}) {
