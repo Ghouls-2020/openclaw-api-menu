@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.1',
+    updatedAt: '2026-09-02',
+    summary: [
+      '兼容 OpenClaw 2026.8.2 Telegram SecretRef 和 Gateway 会话元数据。',
+      '会话列表改用 Gateway sessions.list,恢复群聊、私聊名称及所属 Agent 显示。',
+    ],
+  },
+  {
     version: 'v0.1.0',
     updatedAt: '2026-09-01',
     summary: [
@@ -743,30 +751,38 @@ function formatSessionModelLabel(entry = {}) {
   return `${formatProviderDisplay(displayName, defaultProviderId)} / ${defaultModelId}`;
 }
 
+function readGatewaySessions(limit = 100) {
+  const res = runCommand('openclaw', [
+    'gateway', 'call', 'sessions.list',
+    '--params', JSON.stringify({ limit }),
+    '--json',
+  ], {
+    cwd: WORKSPACE,
+    timeout: 10000,
+    maxBuffer: 8 * 1024 * 1024,
+  });
+  if (res.status !== 0) throw new Error(String(res.stderr || res.stdout || 'Gateway sessions.list 调用失败').trim());
+  const data = JSON.parse(String(res.stdout || '').trim() || '{}');
+  return Array.isArray(data?.sessions) ? data.sessions : [];
+}
+
 function getActiveTelegramSessionFromStatus() {
   try {
-    const res = runCommand('openclaw', ['sessions', '--json', '--all-agents', '--active', '5'], { cwd: WORKSPACE, timeout: 8000 });
-    const data = JSON.parse(`${res.stdout || ''}`.trim() || '{}');
-    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-    const currentGroups = sessions
-      .filter((s) => /^agent:[^:]+:telegram:(group|direct):/.test(String(s?.key || '')))
-      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-    return currentGroups[0] || null;
+    const cutoff = Date.now() - 5 * 60 * 1000;
+    return readGatewaySessions(100)
+      .filter((session) => /^agent:[^:]+:telegram:(group|direct):/.test(String(session?.key || '')))
+      .filter((session) => Number(session.updatedAt || 0) >= cutoff)
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
   } catch {
     return null;
   }
 }
 
 function listSyncableTelegramSessions(limit = 30) {
-  // OpenClaw 2026.8.1 stores sessions in SQLite; use only the official catalog.
+  // Read the running Gateway's resolved session projection. OpenClaw 2026.8.2
+  // includes Telegram displayName/subject metadata here even when botToken is a SecretRef.
   try {
-    const res = runCommand('openclaw', ['sessions', '--json', '--all-agents', '--limit', 'all'], {
-      cwd: WORKSPACE,
-      timeout: 10000,
-      maxBuffer: 8 * 1024 * 1024,
-    });
-    const data = JSON.parse(`${res.stdout || ''}`.trim() || '{}');
-    const rows = (Array.isArray(data?.sessions) ? data.sessions : [])
+    const rows = readGatewaySessions(Math.max(100, limit))
       .filter((session) => /^agent:[^:]+:telegram:(group|direct):/.test(String(session?.key || '')))
       .map((session) => ({
         key: session.key,
@@ -777,6 +793,11 @@ function listSyncableTelegramSessions(limit = 30) {
           modelOverride: session.modelOverride,
           model: session.model,
           modelProvider: session.modelProvider,
+          displayName: session.displayName,
+          subject: session.subject,
+          label: session.label,
+          chatTitle: session.origin?.label,
+          origin: session.origin,
         },
         agentId: session.agentId || getAgentIdFromSessionKey(session.key),
         updatedAt: Number(session.updatedAt || 0),
@@ -784,7 +805,7 @@ function listSyncableTelegramSessions(limit = 30) {
       .sort((a, b) => b.updatedAt - a.updatedAt);
     return { rows: rows.slice(0, limit) };
   } catch (err) {
-    return { rows: [], error: String(err?.message || '官方会话目录读取失败') };
+    return { rows: [], error: String(err?.message || 'Gateway 会话目录读取失败') };
   }
 }
 
@@ -879,14 +900,15 @@ function sortTelegramSessionsForMenu(rows = []) {
 async function confirmSyncTelegramSessions(ask, ref) {
   await refreshTelegramBotNameFromApi();
   while (true) {
-    const { rows: rawRows } = listSyncableTelegramSessions(1000);
+    const { rows: rawRows, error: sessionListError } = listSyncableTelegramSessions(1000);
     const cfg = readJson(CONFIG, {});
     const allowedRows = rawRows.filter((row) => isModelAllowedByPolicy(cfg, ref, row.agentId || getAgentIdFromSessionKey(row.key)));
     const blockedCount = rawRows.length - allowedRows.length;
     const rows = sortTelegramSessionsForMenu(allowedRows);
     await hydrateTelegramSessionNames(rows);
     if (!rows.length) {
-      if (rawRows.length && blockedCount) warn('该模型不在现有 Telegram 会话所属 Agent 的 modelPolicy.allow 中。');
+      if (sessionListError) warn(`读取 Telegram 会话失败:${sessionListError}`);
+      else if (rawRows.length && blockedCount) warn('该模型不在现有 Telegram 会话所属 Agent 的 modelPolicy.allow 中。');
       else info('未找到可同步的 Telegram 群/私聊会话,将只设置默认模型。');
       return { action: 'selected', skipped: true, sessionKeys: [], setDefaultOnly: true };
     }
