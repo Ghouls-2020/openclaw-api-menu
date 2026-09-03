@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.3',
+    updatedAt: '2026-09-03',
+    summary: [
+      '兼容 Provider apiKey SecretRef,通过 Gateway 解析模型目录。',
+      '同步 Provider 时修复所有 agents.entries Agent 的失效模型引用。',
+    ],
+  },
+  {
     version: 'v0.1.2',
     updatedAt: '2026-09-03',
     summary: [
@@ -1490,9 +1498,17 @@ function formatHttpStatusError(status) {
   return reason ? `HTTP ${status} ${reason}` : `HTTP ${status}`;
 }
 
-async function detectProviderStatus(provider) {
+async function detectProviderStatus(provider, providerId = '') {
   try {
     if (!provider?.baseUrl || !provider?.apiKey) return { online: false, latency: null, error: '未配置baseUrl或apiKey', _cached: false };
+    if (provider.apiKey && typeof provider.apiKey === 'object') {
+      try {
+        const ids = await fetchGatewayProviderModelIds(providerId);
+        return { online: ids.length > 0, reachable: true, latency: null, state: 'available', error: null, _cached: false, via: 'gateway' };
+      } catch (err) {
+        return { online: false, reachable: false, latency: null, state: 'unavailable', error: String(err?.message || 'Gateway models.list 调用失败'), _cached: false, via: 'gateway' };
+      }
+    }
     const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
     const cacheKey = `${baseUrl}::${provider.apiKey}`;
     const cached = providerStatusCache.get(cacheKey);
@@ -1833,6 +1849,15 @@ async function detectModelStatus(provider, modelId, options = {}) {
   // 提前定义cacheKey到函数作用域,避免最外层catch访问不到
   let cacheKey = null;
   try {
+    if (provider?.apiKey && typeof provider.apiKey === 'object') {
+      try {
+        const ids = await fetchGatewayProviderModelIds(options.providerId || '');
+        const available = ids.includes(modelId);
+        return { status: available ? 'available' : 'model_not_found', latency: null, error: available ? null : 'Gateway 模型目录中不存在该模型', _cached: false, modelExistsLocally: available, online: available, endpoint: 'gateway' };
+      } catch (err) {
+        return { status: 'failed', latency: null, error: String(err?.message || 'Gateway models.list 调用失败'), _cached: false, modelExistsLocally: false, online: false };
+      }
+    }
     if (!provider?.baseUrl || !provider?.apiKey || !modelId) {
       return {
         status: 'failed',
@@ -2326,14 +2351,45 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     repairString(field);
     repairObject(field);
   }
-  return { changed, messages };
+  return { changed, messages, _nextDefaults: defaults };
 }
 
 function guessInputCaps(id) {
   return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
 }
 
-async function fetchProviderModelIds(provider) {
+async function fetchGatewayProviderModelIds(providerId) {
+  const result = runCommand('openclaw', [
+    'gateway', 'call', 'models.list',
+    '--params', JSON.stringify({ view: 'configured', refresh: true }),
+    '--json',
+  ], { cwd: WORKSPACE, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || 'Gateway models.list 调用失败').trim());
+  const data = JSON.parse(String(result.stdout || '').trim() || '{}');
+  const ids = [...new Set((Array.isArray(data?.models) ? data.models : [])
+    .filter((item) => String(item?.provider || '').toLowerCase() === String(providerId || '').toLowerCase())
+    .map((item) => item?.id).filter(Boolean))];
+  if (!ids.length) throw new Error(`Gateway 未返回 Provider ${providerId} 的模型`);
+  return ids;
+}
+
+function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validModelIds = []) {
+  const repaired = {};
+  const messages = [];
+  for (const [agentId, entry] of Object.entries(entries || {})) {
+    const result = repairModelSelectionForSyncedProvider({ agents: { defaults: entry } }, providerName, validModelIds);
+    if (!result.changed) continue;
+    repaired[agentId] = result._nextDefaults;
+    messages.push(...result.messages.map((message) => `${agentId}.${message}`));
+  }
+  return { entries: repaired, messages };
+}
+
+async function fetchProviderModelIds(provider, providerId = '') {
+  if (provider?.apiKey && typeof provider.apiKey === 'object') {
+    if (!providerId) throw new Error('SecretRef Provider 缺少 Provider ID');
+    return fetchGatewayProviderModelIds(providerId);
+  }
   const baseUrl = normalizeAndValidateBaseUrl(provider?.baseUrl);
   if (!baseUrl) throw new Error('Base URL 格式无效');
   const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
@@ -2456,7 +2512,7 @@ async function chooseProvider(ask, prompt = '选择提供商编号: ', title = '
   const statusMap = new Map();
   await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
     const provider = cfg.models?.providers?.[row.id];
-    const status = await detectProviderStatus(provider);
+    const status = await detectProviderStatus(provider, row.id);
     statusMap.set(row.id, status);
   });
   while (true) {
@@ -2516,9 +2572,9 @@ async function switchDefaultModel(ask) {
         continue;
       }
       const model = models[idx - 1];
-    const modelStatus = provider ? await detectModelStatus(provider, model.id) : { online: false, latency: null, error: '未配置 provider' };
+    const modelStatus = provider ? await detectModelStatus(provider, model.id, { providerId: chosenProvider.id }) : { online: false, latency: null, error: '未配置 provider' };
       console.log(`${color('• 模型检测结果:', C.white, C.bold)} ${formatModelCheckResultColored(modelStatus, { brief: true })}`);
-      if (!(await confirmSwitchWhenModelCheckFailed(ask, modelStatus, () => provider ? detectModelStatus(provider, model.id, { timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : Promise.resolve(modelStatus)))) {
+      if (!(await confirmSwitchWhenModelCheckFailed(ask, modelStatus, () => provider ? detectModelStatus(provider, model.id, { providerId: chosenProvider.id, timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : Promise.resolve(modelStatus)))) {
         continue;
       }
       const ref = `${chosenProvider.id}/${model.id}`;
@@ -2692,7 +2748,7 @@ async function syncAllProviders(ask) {
     let item;
     try {
       const provider = beforeCfg.models?.providers?.[row.id];
-      const ids = await fetchProviderModelIds(provider);
+      const ids = await fetchProviderModelIds(provider, row.id);
       item = { row, status: 0, ids, durationMs: Date.now() - startedAt };
     } catch (err) {
       item = { row, status: 1, output: err.message, durationMs: Date.now() - startedAt };
@@ -2717,6 +2773,11 @@ async function syncAllProviders(ask) {
       const repairedDefaults = repairModelSelectionForSyncedProvider(nextCfg, row.id, item.ids);
       if (repairedDefaults.changed) {
         for (const msg of repairedDefaults.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
+      }
+      const repairedEntries = repairAgentEntriesForSyncedProvider(nextCfg.agents?.entries, row.id, item.ids);
+      if (Object.keys(repairedEntries.entries).length) {
+        patchPayload.agents.entries = { ...(patchPayload.agents.entries || {}), ...repairedEntries.entries };
+        for (const msg of repairedEntries.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
       }
       replacePaths.push(`models.providers.${row.id}.models`);
       patchPayload.agents.defaults.models[`${row.id}/*`] = {};
@@ -2788,7 +2849,7 @@ async function syncProvider(ask) {
     const statusMap = new Map();
     await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
       const provider = cfg.models?.providers?.[row.id];
-      const status = await detectProviderStatus(provider);
+      const status = await detectProviderStatus(provider, row.id);
       statusMap.set(row.id, status);
     });
     const listRows = rows.map((row, i) => {
@@ -3006,7 +3067,7 @@ async function modifyProvider(ask) {
         break;
       }
       writeJson(DISPLAY_NAMES, displayNames);
-      const checked = await detectProviderStatus(provider);
+      const checked = await detectProviderStatus(provider, row.id);
       success(`API 配置修改成功。`);
       info(`修改后检测:${stripAnsi(formatProviderStatusCompact(checked))}`);
       const shouldSyncModels = String(oldBaseUrl || '') !== String(newBaseUrl || '') || String(oldApiKey || '') !== String(newApiKey || '');
@@ -3051,7 +3112,7 @@ async function showProvidersDetail(ask) {
 
   const detailRows = await mapWithConcurrency(rows, Math.min(5, rows.length), async (row) => {
     const provider = cfg.models?.providers?.[row.id];
-    const status = await detectProviderStatus(provider);
+    const status = await detectProviderStatus(provider, row.id);
     return { row, provider, status };
   });
 
@@ -3107,7 +3168,7 @@ async function quickSwitchFavorite(ask) {
 
   await mapWithConcurrency(providerEntries, 3, async ({ providerId, provider }) => {
     if (provider && provider.baseUrl && provider.apiKey) {
-      providerStatusMap.set(providerId, await detectProviderStatus(provider));
+      providerStatusMap.set(providerId, await detectProviderStatus(provider, providerId));
     } else {
       providerStatusMap.set(providerId, { online: false, latency: null, error: '未配置 provider' });
     }
@@ -3117,7 +3178,7 @@ async function quickSwitchFavorite(ask) {
     const [providerId, modelId] = splitModelRef(item.ref);
     const provider = providers[providerId];
     if (provider && provider.baseUrl && provider.apiKey) {
-      modelStatusMap.set(item.ref, await detectModelStatus(provider, modelId));
+      modelStatusMap.set(item.ref, await detectModelStatus(provider, modelId, { providerId }));
     } else {
       modelStatusMap.set(item.ref, { status: 'failed', online: false, latency: null, error: '未配置 provider' });
     }
@@ -3186,9 +3247,9 @@ async function quickSwitchFavorite(ask) {
     const [providerId, modelId] = splitModelRef(selected.ref);
     const provider = providers[providerId];
     const modelStatus = modelStatusMap.get(selected.ref)
-      || (provider ? await detectModelStatus(provider, modelId) : { online: false, latency: null, error: '未配置 provider' });
+      || (provider ? await detectModelStatus(provider, modelId, { providerId }) : { online: false, latency: null, error: '未配置 provider' });
     if (!(await confirmSwitchWhenModelCheckFailed(ask, modelStatus, async () => {
-      const freshStatus = provider ? await detectModelStatus(provider, modelId, { timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : modelStatus;
+      const freshStatus = provider ? await detectModelStatus(provider, modelId, { providerId, timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : modelStatus;
       modelStatusMap.set(selected.ref, freshStatus);
       return freshStatus;
     }))) {
@@ -3298,7 +3359,7 @@ async function searchModelsGlobally(ask) {
       const providerIds = [...new Set(visibleMatches.map((item) => item.providerId))];
       await mapWithConcurrency(providerIds, 3, async (providerId) => {
         const provider = providers[providerId];
-        statusMap.set(providerId, await detectProviderStatus(provider));
+        statusMap.set(providerId, await detectProviderStatus(provider, providerId));
       });
       const listRows = visibleMatches.map((item, i) => {
         const status = statusMap.get(item.providerId) || { online: false, latency: null };
@@ -3323,9 +3384,9 @@ async function searchModelsGlobally(ask) {
 
       const selected = visibleMatches[idx - 1];
       const provider = providers[selected.providerId];
-      const modelStatus = provider ? await detectModelStatus(provider, selected.id) : { online: false, latency: null, error: '未配置 provider' };
+      const modelStatus = provider ? await detectModelStatus(provider, selected.id, { providerId: selected.providerId }) : { online: false, latency: null, error: '未配置 provider' };
       console.log(formatModelCheckResultColored(modelStatus));
-      if (!(await confirmSwitchWhenModelCheckFailed(ask, modelStatus, () => provider ? detectModelStatus(provider, selected.id, { timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : Promise.resolve(modelStatus)))) {
+      if (!(await confirmSwitchWhenModelCheckFailed(ask, modelStatus, () => provider ? detectModelStatus(provider, selected.id, { providerId: selected.providerId, timeoutMs: MODEL_STATUS_RETRY_TIMEOUT_MS, skipCache: true }) : Promise.resolve(modelStatus)))) {
         continue;
       }
 

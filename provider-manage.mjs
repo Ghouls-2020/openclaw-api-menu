@@ -483,6 +483,26 @@ if (action === 'remove') {
   process.exit(0);
 }
 
+async function fetchGatewayProviderModelIds(providerId) {
+  const result = spawnSync('openclaw', ['gateway', 'call', 'models.list', '--params', JSON.stringify({ view: 'configured', refresh: true }), '--json'], { encoding: 'utf8', timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || 'Gateway models.list 调用失败').trim());
+  const data = JSON.parse(String(result.stdout || '').trim() || '{}');
+  const ids = [...new Set((Array.isArray(data?.models) ? data.models : [])
+    .filter((item) => String(item?.provider || '').toLowerCase() === String(providerId || '').toLowerCase())
+    .map((item) => item?.id).filter(Boolean))];
+  if (!ids.length) throw new Error(`Gateway 未返回 Provider ${providerId} 的模型`);
+  return ids;
+}
+
+function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validModelIds = []) {
+  const repaired = {};
+  for (const [agentId, entry] of Object.entries(entries || {})) {
+    const result = repairModelSelectionForSyncedProvider({ agents: { defaults: entry } }, providerName, validModelIds);
+    if (result.changed) repaired[agentId] = result._nextDefaults;
+  }
+  return repaired;
+}
+
 if (action === 'sync') {
   if (!provider || !providerName) {
     console.error(`Provider not found: ${providerInput}`);
@@ -496,6 +516,29 @@ if (action === 'sync') {
   if (!baseUrl) {
     console.error('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
     process.exit(4);
+  }
+  if (provider.apiKey && typeof provider.apiKey === 'object') {
+    let ids;
+    try { ids = await fetchGatewayProviderModelIds(providerName); }
+    catch (err) { console.error(String(err?.message || 'Gateway models.list 调用失败')); process.exit(4); }
+    let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
+    const displayName = getProviderDisplayName(providerName);
+    provider.models = ids.map(id => ({ id, name: `${displayName} / ${id}`, input: guessInputCaps(id), cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1048576, maxTokens: 128000 }));
+    const wanted = new Set(ids.map(id => `${providerName}/${id}`));
+    const modelRefPatch = {};
+    for (const ref of wanted) if (!Object.prototype.hasOwnProperty.call(modelMap, ref)) modelRefPatch[ref] = {};
+    for (const key of Object.keys(modelMap).filter(key => key.startsWith(`${providerName}/`) && !wanted.has(key))) modelRefPatch[key] = null;
+    modelRefPatch[`${providerName}/*`] = {};
+    const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
+    const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? { ...cfg.agents?.defaults, ...repairedDefaults._nextDefaults } : (cfg.agents?.defaults || {}), previousDefaults);
+    const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
+    const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: { ...defaultsPatch, models: modelRefPatch } } };
+    if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
+    const patchRes = runConfigPatch(patch, ['--replace-path', `models.providers.${providerName}.models`]);
+    if (patchRes.status !== 0) { console.error('Failed to apply config patch'); if (patchRes.stdout) console.error(String(patchRes.stdout).trim()); if (patchRes.stderr) console.error(String(patchRes.stderr).trim()); process.exit(patchRes.status || 4); }
+    console.log(`Synced provider: ${providerName}`);
+    console.log(`Models now present: ${ids.length}`);
+    process.exit(0);
   }
   const modelsUrl = (() => {
     const u = new URL(baseUrl);
@@ -576,6 +619,7 @@ if (action === 'sync') {
   );
   const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+  const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -588,6 +632,7 @@ if (action === 'sync') {
         ...defaultsPatch,
         models: modelRefPatch,
       },
+      ...(Object.keys(repairedEntries).length ? { entries: repairedEntries } : {}),
     },
   }, ['--replace-path', `models.providers.${providerName}.models`]);
   if (patchRes.status !== 0) {

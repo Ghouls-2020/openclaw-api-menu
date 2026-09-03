@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
@@ -98,9 +99,22 @@ function formatHttpStatusError(status) {
   return reason ? `HTTP ${status} ${reason}` : `HTTP ${status}`;
 }
 
-async function detectProviderStatus(provider) {
+function fetchGatewayProviderStatus(providerId) {
+  const result = spawnSync('openclaw', ['gateway', 'call', 'models.list', '--params', JSON.stringify({ view: 'configured', refresh: true }), '--json'], { encoding: 'utf8', timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || 'Gateway models.list 调用失败').trim());
+  const data = JSON.parse(String(result.stdout || '').trim() || '{}');
+  const count = (Array.isArray(data?.models) ? data.models : []).filter((item) => String(item?.provider || '').toLowerCase() === String(providerId || '').toLowerCase()).length;
+  if (!count) throw new Error(`Gateway 未返回 Provider ${providerId} 的模型`);
+  return count;
+}
+
+async function detectProviderStatus(provider, providerId = '') {
   if (!provider?.baseUrl || !provider?.apiKey) {
     return { online: false, latency: null, error: '未配置baseUrl或apiKey' };
+  }
+  if (provider.apiKey && typeof provider.apiKey === 'object') {
+    try { fetchGatewayProviderStatus(providerId); return { online: true, reachable: true, latency: null, state: 'available', error: null, via: 'gateway' }; }
+    catch (err) { return { online: false, reachable: false, latency: null, state: 'unavailable', error: String(err?.message || 'Gateway models.list 调用失败'), via: 'gateway' }; }
   }
   const baseUrl = String(provider.baseUrl).replace(/\/+$/, '');
   const modelsUrl = (() => {
@@ -184,7 +198,7 @@ const rows = Object.entries(rawProviders).map(([id, provider]) => {
 console.log(color('正在检测所有API状态，请稍等...', C.blue));
 const statusMap = new Map();
 await mapWithConcurrency(rows, 3, async (row) => {
-  const status = await detectProviderStatus(row.provider);
+  const status = await detectProviderStatus(row.provider, row.id);
   statusMap.set(row.id, status);
 });
 
