@@ -282,7 +282,7 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel']) {
     repairString(field);
     repairObject(field);
   }

@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.2',
+    updatedAt: '2026-09-03',
+    summary: [
+      '修复 Provider 同步误清空 agents.defaults.mediaModels。',
+      '修复彻底卸载状态判断和 stdin EOF 输入崩溃。',
+    ],
+  },
+  {
     version: 'v0.1.1',
     updatedAt: '2026-09-02',
     summary: [
@@ -1099,6 +1107,11 @@ function getOpenClawVersion() {
   }
 }
 
+function isOpenClawInstalled() {
+  const res = runCommand('openclaw', ['--version']);
+  return res.error?.code !== 'ENOENT';
+}
+
 function extractOpenClawVersion(versionText, fallback = '') {
   const text = String(versionText || '').trim();
   return text.match(/\d{4}\.\d+\.\d+(?:-\d+)?/)?.[0] || fallback || text;
@@ -2081,7 +2094,7 @@ function askFactory() {
       resolve('0');
       return;
     }
-    rl.question(q, (a) => resolve(a.trim()));
+    rl.question(q, (a) => resolve(String(a ?? '').trim()));
   });
   ask.close = () => {
     if (!closed) rl.close();
@@ -2309,7 +2322,7 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel']) {
     repairString(field);
     repairObject(field);
   }
@@ -4095,7 +4108,7 @@ async function purgeOpenClaw(ask) {
   info('正在卸载 OpenClaw，请稍等...');
   const uninstallRes = runCommand('npm', ['uninstall', '-g', 'openclaw'], { stdio: 'inherit' });
   // 失败保护:确认程序真的卸载成功才删配置,避免“程序还在、配置/Token/Session 全没了”。
-  const stillInstalled = getOpenClawVersion() !== '';
+  const stillInstalled = isOpenClawInstalled();
   if (uninstallRes.status === 0 && !stillInstalled) {
     try {
       fs.rmSync(STATE_DIR, { recursive: true, force: true });
