@@ -523,14 +523,16 @@ if (action === 'sync') {
     catch (err) { console.error(String(err?.message || 'Gateway models.list 调用失败')); process.exit(4); }
     let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
     const displayName = getProviderDisplayName(providerName);
-    provider.models = ids.map(id => ({ id, name: `${displayName} / ${id}`, input: guessInputCaps(id), cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1048576, maxTokens: 128000 }));
+    provider.models = ids.map(id => ({ id, name: `${displayName} / ${id}`, input: guessInputCaps(id) }));
     const wanted = new Set(ids.map(id => `${providerName}/${id}`));
     const modelRefPatch = {};
     for (const ref of wanted) if (!Object.prototype.hasOwnProperty.call(modelMap, ref)) modelRefPatch[ref] = {};
     for (const key of Object.keys(modelMap).filter(key => key.startsWith(`${providerName}/`) && !wanted.has(key))) modelRefPatch[key] = null;
     modelRefPatch[`${providerName}/*`] = {};
     const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
-    const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? { ...cfg.agents?.defaults, ...repairedDefaults._nextDefaults } : (cfg.agents?.defaults || {}), previousDefaults);
+    const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}), previousDefaults);
+    const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
+    if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
     const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
     const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: { ...defaultsPatch, models: modelRefPatch } } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
@@ -578,7 +580,8 @@ if (action === 'sync') {
     if (text) console.error(text.slice(0, 1000));
     process.exit(4);
   }
-  const data = await res.json();
+  let data;
+  try { data = await res.json(); } catch { console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)'); process.exit(4); }
   const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
   const ids = [...new Set(rows.map(x => x?.id).filter(Boolean))];
   if (!ids.length) {
@@ -591,9 +594,6 @@ if (action === 'sync') {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
   }));
   const hasWildcard = Object.prototype.hasOwnProperty.call(modelMap, `${providerName}/*`);
   const existingFullRefs = Object.keys(modelMap).filter(k => k !== `${providerName}/*` && k.startsWith(`${providerName}/`));
@@ -614,7 +614,7 @@ if (action === 'sync') {
   }
   const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
   const defaultsPatch = buildDefaultSelectionPatch(
-    repairedDefaults.changed ? { ...cfg.agents?.defaults, ...repairedDefaults._nextDefaults } : (cfg.agents?.defaults || {}),
+    repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}),
     previousDefaults
   );
   const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);

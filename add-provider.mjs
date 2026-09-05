@@ -47,7 +47,11 @@ if (!baseUrl) {
   console.error('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
   process.exit(1);
 }
-const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+const modelsUrl = (() => {
+  const u = new URL(baseUrl);
+  const cleanPath = u.pathname.replace(/\/+$/, '');
+  return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+})();
 
 if (!fs.existsSync(CONFIG)) {
   console.error(`OpenClaw config not found: ${CONFIG}`);
@@ -140,9 +144,6 @@ function normalizeModel(displayName, id) {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
   };
 }
 
@@ -266,7 +267,8 @@ if (!res.ok) {
   process.exit(2);
 }
 
-const data = await res.json();
+let data;
+try { data = await res.json(); } catch { console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)'); process.exit(2); }
 const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 const ids = [...new Set(rows.map(x => x?.id).filter(Boolean))];
 if (!ids.length) {

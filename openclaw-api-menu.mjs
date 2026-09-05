@@ -62,6 +62,16 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.4',
+    updatedAt: '2026-09-06',
+    summary: [
+      '修复无名 Telegram 会话崩溃和模型数为 0 的 Provider 从菜单消失。',
+      '修复会话返回层级、删除失败原因被吞、重名会话无法区分。',
+      '修复同步清理解析失效引用、SecretRef 白名单缺失、卸载判断。',
+      '统一 /models URL 拼接,停止编造模型上下文/成本元数据。',
+    ],
+  },
+  {
     version: 'v0.1.3',
     updatedAt: '2026-09-03',
     summary: [
@@ -715,7 +725,7 @@ function getSessionFriendlyName(key, entry = {}) {
     .map(cleanSessionDisplayName)
     .filter(Boolean);
   if (directFields.length) return directFields[0];
-  return getSessionDisplayNameFromTrajectory(entry, getAgentIdFromSessionKey(key));
+  return '';
 }
 
 function extractSessionTargetId(key) {
@@ -729,13 +739,14 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
   if (match) {
     const [, agentId, , kind, target] = match;
     const friendlyName = getSessionFriendlyName(key, entry);
+    const duplicateTag = friendlyName && duplicateNames.has(friendlyName) ? ` (${target})` : '';
     if (kind === 'direct') {
       const directName = friendlyName || getDirectChatDisplayName(target);
-      if (directName && directName !== target) return `TG私聊 【${directName}】 [${agentId}]`;
+      if (directName && directName !== target) return `TG私聊 【${directName}${duplicateTag}】 [${agentId}]`;
       return `TG私聊用户 [${agentId}]`;
     }
     if (kind === 'group') {
-      if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}】 [${agentId}]`;
+      if (friendlyName && friendlyName !== target) return `TG群聊 【${friendlyName}${duplicateTag}】 [${agentId}]`;
       return `TG群聊 [${agentId}]`;
     }
     return `TG Slash【${friendlyName || target}】`;
@@ -980,7 +991,8 @@ async function confirmSyncTelegramSessions(ask, ref) {
       }
       const result = deleteTelegramSessionRecords(selectedRows.map(row => row.key));
       if (result.deleted > 0) success(`已清理 ${result.deleted} 条列表记录。`);
-      else warn(result.reason || '没有删除任何会话记录。');
+      else warn('没有删除任何会话记录。');
+      for (const msg of result.failed || []) warn(`删除失败:${msg}`);
       continue;
     }
 
@@ -1117,7 +1129,9 @@ function getOpenClawVersion() {
 
 function isOpenClawInstalled() {
   const res = runCommand('openclaw', ['--version']);
-  return res.error?.code !== 'ENOENT';
+  if (res.error?.code === 'ENOENT') return false;
+  if (process.platform === 'win32') return res.status === 0;
+  return true;
 }
 
 function extractOpenClawVersion(versionText, fallback = '') {
@@ -1515,7 +1529,8 @@ async function detectProviderStatus(provider, providerId = '') {
     if (cached && Date.now() - cached.ts < STATUS_CACHE_TTL_MS) {
       return { ...cached.value, _cached: true };
     }
-    const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+    const modelsUrl = buildModelsListUrl(baseUrl);
+    if (!modelsUrl) return { online: false, latency: null, error: 'Base URL 格式无效', _cached: false };
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PROVIDER_STATUS_TIMEOUT_MS);
     const start = Date.now();
@@ -2063,6 +2078,7 @@ function providersState(options = {}) {
     .filter(([id, provider]) => {
       if (!respectPolicy) return true;
       const models = Array.isArray(provider?.models) ? provider.models : [];
+      if (!models.length) return true;
       return models.some((model) => isModelAllowedByPolicy(cfg, `${id}/${model.id}`));
     })
     .map(([id, provider]) => ({
@@ -2392,7 +2408,8 @@ async function fetchProviderModelIds(provider, providerId = '') {
   }
   const baseUrl = normalizeAndValidateBaseUrl(provider?.baseUrl);
   if (!baseUrl) throw new Error('Base URL 格式无效');
-  const modelsUrl = /\/v1$/.test(baseUrl) ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+  const modelsUrl = buildModelsListUrl(baseUrl);
+  if (!modelsUrl) throw new Error('Base URL 格式无效');
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), PROVIDER_SYNC_FETCH_TIMEOUT_MS);
   try {
@@ -2407,7 +2424,7 @@ async function fetchProviderModelIds(provider, providerId = '') {
       const text = await res.text().catch(() => '');
       throw new Error(`HTTP ${res.status}${text ? ` ${text.slice(0, 200)}` : ''}`);
     }
-    const data = await res.json();
+    const data = await res.json().catch(() => { throw new Error('/models 响应不是有效 JSON(可能被网关返回了 HTML 错误页)'); });
     const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
     const ids = [...new Set(rows.map((item) => item?.id).filter(Boolean))];
     if (!ids.length) throw new Error('No model IDs found in /models response');
@@ -2421,13 +2438,11 @@ async function fetchProviderModelIds(provider, providerId = '') {
 }
 
 function normalizeModel(displayName, id) {
+  // 只保留确定信息;contextWindow/maxTokens/cost 不再编造,交由 OpenClaw 默认值处理。
   return {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
   };
 }
 
@@ -2540,7 +2555,7 @@ async function switchDefaultModel(ask) {
     return;
   }
 
-  while (true) {
+  providerLoop: while (true) {
     const chosenProvider = await chooseProvider(ask, '选择要切换到的提供商编号', '换模型');
     if (chosenProvider === '__BACK__') return;
     if (!chosenProvider) return;
@@ -2565,7 +2580,7 @@ async function switchDefaultModel(ask) {
       for (const row of listRows) console.log(row);
       printActionFooter([{ key: '0', label: '返回上一级' }], { blankLineBefore: false });
       const ans = await ask(color('请输入你的选择: ', C.bold));
-      if (ans === '0') break;
+      if (ans === '0') continue providerLoop;
       const idx = Number(ans);
       if (!Number.isInteger(idx) || idx < 1 || idx > models.length) {
         warn('编号无效,请重新输入。');
@@ -2622,6 +2637,16 @@ function normalizeAndValidateBaseUrl(value) {
     const url = new URL(text);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
     return text.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function buildModelsListUrl(baseUrl) {
+  try {
+    const u = new URL(String(baseUrl || ''));
+    const cleanPath = u.pathname.replace(/\/+$/, '');
+    return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
   } catch {
     return '';
   }
@@ -3769,8 +3794,9 @@ async function upgradeOpenClaw(ask) {
     return;
   }
   info('正在执行官方更新流程:openclaw update');
-  const res = runCommand('openclaw', ['update'], { stdio: 'inherit' });
+  const res = runCommand('openclaw', ['update'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
   const combinedUpdateOutput = `${res.stdout || ''}${res.stderr || ''}`;
+  if (combinedUpdateOutput.trim()) console.log(combinedUpdateOutput.trimEnd());
   const newVersion = getOpenClawVersion();
   if (res.status === 0) {
     const lines = [];
