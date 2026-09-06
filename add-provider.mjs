@@ -4,7 +4,6 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { guessModelLimits } from './model-limits.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
@@ -170,7 +169,8 @@ function normalizeModel(displayName, id) {
     input: guessInputCaps(id),
     reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    ...guessModelLimits(id), // 按模型家族推断 contextWindow/maxTokens(model-limits.mjs)
+    contextWindow: 1048576,
+    maxTokens: 128000,
   };
 }
 

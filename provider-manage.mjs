@@ -4,7 +4,6 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { guessModelLimits } from './model-limits.mjs';
 
 const rawArgs = process.argv.slice(2);
 const [action, providerInput, providerDisplayName] = rawArgs;
@@ -347,7 +346,8 @@ function normalizeModel(displayName, id) {
     input: guessInputCaps(id),
     reasoning: guessReasoning(id),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    ...guessModelLimits(id), // 按模型家族推断 contextWindow/maxTokens(model-limits.mjs)
+    contextWindow: 1048576,
+    maxTokens: 128000,
   };
 }
 
@@ -358,9 +358,6 @@ const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost'
 function mergeModel(displayName, id, prev) {
   const fresh = normalizeModel(displayName, id);
   if (!prev || typeof prev !== 'object') return fresh;
-  // 手工调过的窗口/输出上限优先于脚本推断值,同步不再冲掉
-  if (Number.isFinite(prev.contextWindow) && prev.contextWindow > 0) fresh.contextWindow = prev.contextWindow;
-  if (Number.isFinite(prev.maxTokens) && prev.maxTokens > 0) fresh.maxTokens = prev.maxTokens;
   const preserved = {};
   for (const [key, value] of Object.entries(prev)) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
