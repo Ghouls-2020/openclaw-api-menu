@@ -144,6 +144,7 @@ function normalizeModel(displayName, id) {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
+    reasoning: true, // 让该服务商下的所有模型默认走思考(reasoner);可后续按需改 false
   };
 }
 
