@@ -62,6 +62,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.5',
+    updatedAt: '2026-09-06',
+    summary: [
+      'add-provider.mjs 新建模型默认开启 reasoning: true,使服务商下所有模型走思考。',
+    ],
+  },
+  {
     version: 'v0.1.4',
     updatedAt: '2026-09-06',
     summary: [
