@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+import { guessModelLimits } from './model-limits.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
@@ -139,12 +140,37 @@ function guessInputCaps(id) {
   return ['text'];
 }
 
+
+function guessReasoning(id) {
+  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
+  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
+  const s = String(id).toLowerCase();
+  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
+}
+
+// agents.defaults.models 只是元数据/别名覆盖表,不影响模型可用性(可用性由
+// models.providers 与 modelPolicy.allow 决定)。同步不再往里写引用,并清掉本
+// provider 遗留的空对象引用;带实际内容的条目(如 alias)保留。
+function clearProviderModelRefs(modelMap, providerName) {
+  const patch = {};
+  const prefix = String(providerName).toLowerCase();
+  for (const [ref, value] of Object.entries(modelMap || {})) {
+    if (String(ref).split('/')[0]?.toLowerCase() !== prefix) continue;
+    const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+    if (isEmptyObject) patch[ref] = null;
+  }
+  return patch;
+}
+
+
 function normalizeModel(displayName, id) {
   return {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    reasoning: true, // 让该服务商下的所有模型默认走思考(reasoner);可后续按需改 false
+    reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...guessModelLimits(id), // 按模型家族推断 contextWindow/maxTokens(model-limits.mjs)
   };
 }
 
@@ -179,7 +205,8 @@ const displayNames = ensureJsonFile(DISPLAY_NAMES, {});
 const displayNameConflict = findProviderDisplayNameConflict(providerDisplayName, cfg.models.providers, displayNames, providerName);
 if (displayNameConflict) {
   console.error(`Display name already exists: ${providerDisplayName} (${displayNameConflict.id})`);
-  process.exit(2);
+  // 5 = 输入校验失败,与网络类失败(2)区分,调用方据此决定是否重试。
+  process.exit(5);
 }
 if (!cfg.agents) cfg.agents = {};
 if (!cfg.agents.defaults) cfg.agents.defaults = {};
@@ -214,7 +241,9 @@ function buildAgentsPatch(defaultsPatch, name) {
 
 // 幂等重试只补齐目录和显式白名单，不覆盖已有 Provider 的 URL、密钥或模型列表。
 if (cfg.models.providers[providerName]) {
-  const defaultsPatch = { models: { [`${providerName}/*`]: {} } };
+  const defaultsPatch = {};
+  const staleRefs = clearProviderModelRefs(cfg.agents?.defaults?.models, providerName);
+  if (Object.keys(staleRefs).length) defaultsPatch.models = staleRefs;
   const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   const patchRes = runConfigPatch({ agents: buildAgentsPatch(defaultsPatch, providerName) });
@@ -278,9 +307,10 @@ if (!ids.length) {
 }
 
 const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
-const modelsPatch = { [`${providerName}/*`]: {} };
 const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
-const defaultsPatch = { models: modelsPatch };
+const defaultsPatch = {};
+const staleModelRefs = clearProviderModelRefs(cfg.agents?.defaults?.models, providerName);
+if (Object.keys(staleModelRefs).length) defaultsPatch.models = staleModelRefs;
 if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
 
 console.error('正在写入配置，请稍等...');

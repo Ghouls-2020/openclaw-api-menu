@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+import { guessModelLimits } from './model-limits.mjs';
 
 const rawArgs = process.argv.slice(2);
 const [action, providerInput, providerDisplayName] = rawArgs;
@@ -332,6 +333,60 @@ function pruneModelSelection(config, name) {
 function guessInputCaps(id) {
   return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
 }
+function guessReasoning(id) {
+  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
+  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
+  const s = String(id).toLowerCase();
+  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
+}
+
+function normalizeModel(displayName, id) {
+  return {
+    id,
+    name: `${displayName} / ${id}`,
+    input: guessInputCaps(id),
+    reasoning: guessReasoning(id),
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...guessModelLimits(id), // 按模型家族推断 contextWindow/maxTokens(model-limits.mjs)
+  };
+}
+
+// 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
+// 视为手工维护,原样保留。
+const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
+
+function mergeModel(displayName, id, prev) {
+  const fresh = normalizeModel(displayName, id);
+  if (!prev || typeof prev !== 'object') return fresh;
+  // 手工调过的窗口/输出上限优先于脚本推断值,同步不再冲掉
+  if (Number.isFinite(prev.contextWindow) && prev.contextWindow > 0) fresh.contextWindow = prev.contextWindow;
+  if (Number.isFinite(prev.maxTokens) && prev.maxTokens > 0) fresh.maxTokens = prev.maxTokens;
+  const preserved = {};
+  for (const [key, value] of Object.entries(prev)) {
+    if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
+  }
+  return { ...fresh, ...preserved };
+}
+
+function buildPrevModelMap(models) {
+  return new Map((Array.isArray(models) ? models : []).map((m) => [m?.id, m]).filter(([id]) => id));
+}
+
+// agents.defaults.models 只是元数据/别名覆盖表,不影响模型可用性(可用性由
+// models.providers 与 modelPolicy.allow 决定)。同步不再往里写引用,并清掉本
+// provider 遗留的空对象引用;带实际内容的条目(如 alias)保留。
+function clearProviderModelRefs(modelMap, providerName) {
+  const patch = {};
+  const prefix = String(providerName).toLowerCase();
+  for (const [ref, value] of Object.entries(modelMap || {})) {
+    if (String(ref).split('/')[0]?.toLowerCase() !== prefix) continue;
+    const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+    if (isEmptyObject) patch[ref] = null;
+  }
+  return patch;
+}
+
+
 
 function getProviderDisplayName(name) {
   return displayNames[name] || inferProviderDisplayName(providers[name], name);
@@ -523,23 +578,25 @@ if (action === 'sync') {
     catch (err) { console.error(String(err?.message || 'Gateway models.list 调用失败')); process.exit(4); }
     let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
     const displayName = getProviderDisplayName(providerName);
-    provider.models = ids.map(id => ({ id, name: `${displayName} / ${id}`, input: guessInputCaps(id) }));
-    const wanted = new Set(ids.map(id => `${providerName}/${id}`));
-    const modelRefPatch = {};
-    for (const ref of wanted) if (!Object.prototype.hasOwnProperty.call(modelMap, ref)) modelRefPatch[ref] = {};
-    for (const key of Object.keys(modelMap).filter(key => key.startsWith(`${providerName}/`) && !wanted.has(key))) modelRefPatch[key] = null;
-    modelRefPatch[`${providerName}/*`] = {};
+    const prevModels = buildPrevModelMap(provider.models);
+    provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id)));
+    const addedModels = ids.filter(id => !prevModels.has(id)).length;
+    const removedModels = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
+    const modelRefPatch = clearProviderModelRefs(modelMap, providerName);
     const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
     const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}), previousDefaults);
     const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
     if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
     const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
-    const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: { ...defaultsPatch, models: modelRefPatch } } };
+    if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
+    const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: defaultsPatch } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
     const patchRes = runConfigPatch(patch, ['--replace-path', `models.providers.${providerName}.models`]);
     if (patchRes.status !== 0) { console.error('Failed to apply config patch'); if (patchRes.stdout) console.error(String(patchRes.stdout).trim()); if (patchRes.stderr) console.error(String(patchRes.stderr).trim()); process.exit(patchRes.status || 4); }
     console.log(`Synced provider: ${providerName}`);
     console.log(`Models now present: ${ids.length}`);
+    console.log(`Added models: ${addedModels}`);
+    console.log(`Removed models: ${removedModels}`);
     process.exit(0);
   }
   const modelsUrl = (() => {
@@ -590,28 +647,11 @@ if (action === 'sync') {
   }
   let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
   const displayName = getProviderDisplayName(providerName);
-  provider.models = ids.map(id => ({
-    id,
-    name: `${displayName} / ${id}`,
-    input: guessInputCaps(id),
-  }));
-  const hasWildcard = Object.prototype.hasOwnProperty.call(modelMap, `${providerName}/*`);
-  const existingFullRefs = Object.keys(modelMap).filter(k => k !== `${providerName}/*` && k.startsWith(`${providerName}/`));
-  const wantedFullRefs = ids.map(id => `${providerName}/${id}`);
-  const existingSet = new Set(existingFullRefs);
-  const wantedSet = new Set(wantedFullRefs);
-  const added = wantedFullRefs.filter(r => !existingSet.has(r)).length;
-  const removed = existingFullRefs.filter(r => !wantedSet.has(r)).length;
-  const modelRefPatch = {};
-  for (const ref of wantedFullRefs) {
-    if (!Object.prototype.hasOwnProperty.call(modelMap, ref)) modelRefPatch[ref] = {};
-  }
-  for (const key of existingFullRefs) {
-    if (!wantedSet.has(key)) modelRefPatch[key] = null;
-  }
-  if (!hasWildcard) {
-    modelRefPatch[`${providerName}/*`] = {};
-  }
+  const prevModels = buildPrevModelMap(provider.models);
+  provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id)));
+  const added = ids.filter(id => !prevModels.has(id)).length;
+  const removed = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
+  const modelRefPatch = clearProviderModelRefs(modelMap, providerName);
   const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
   const defaultsPatch = buildDefaultSelectionPatch(
     repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}),
@@ -619,6 +659,7 @@ if (action === 'sync') {
   );
   const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
+  if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
   const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
@@ -628,10 +669,7 @@ if (action === 'sync') {
       },
     },
     agents: {
-      defaults: {
-        ...defaultsPatch,
-        models: modelRefPatch,
-      },
+      defaults: defaultsPatch,
       ...(Object.keys(repairedEntries).length ? { entries: repairedEntries } : {}),
     },
   }, ['--replace-path', `models.providers.${providerName}.models`]);
@@ -644,8 +682,8 @@ if (action === 'sync') {
   console.log(`Synced provider: ${providerName}`);
   console.log(`Display name: ${displayName}`);
   console.log(`Models now present: ${ids.length}`);
-  console.log(`Added refs: ${added}`);
-  console.log(`Removed stale refs: ${removed}`);
+  console.log(`Added models: ${added}`);
+  console.log(`Removed models: ${removed}`);
   if (repairedDefaults.changed) {
     console.log('Repaired default model refs:');
     for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);

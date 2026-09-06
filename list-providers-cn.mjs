@@ -182,7 +182,7 @@ const rows = Object.entries(rawProviders).map(([id, provider]) => {
   const displayName = (typeof rawDisplayName === 'string' && rawDisplayName)
     ? rawDisplayName
     : (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string'
-      ? String(provider.models[0].name).split('/')[0].trim()
+      ? String(provider.models[0].name).split(' / ')[0].trim()
       : id);
   return {
     id,

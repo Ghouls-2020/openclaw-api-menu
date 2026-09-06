@@ -440,11 +440,24 @@ function runCommand(cmd, args = [], options = {}) {
 }
 
 
+// process.execPath 在 Homebrew 下是带版本号的 Cellar 路径(如 .../node/26.8.1/bin/node),
+// brew upgrade 后该路径消失,写进 alias 会导致 ocapi 直接失效。若 PATH 上的稳定软链
+// 指向同一个可执行文件,就改用软链路径。
+function resolveStableNodePath() {
+  const exec = process.execPath;
+  let real;
+  try { real = fs.realpathSync(exec); } catch { return exec; }
+  for (const candidate of ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node']) {
+    try { if (fs.realpathSync(candidate) === real) return candidate; } catch {}
+  }
+  return exec;
+}
+
 function ensureOcapiShortcut(options = {}) {
   const { verbose = false } = options;
   if (process.platform === 'win32') return { changed: false, skipped: true, reason: 'Windows 暂不自动写入 shell alias' };
   const escapeShellSingle = (value) => String(value).replace(/'/g, "'\\''");
-  const aliasLine = `alias ocapi='${escapeShellSingle(process.execPath)} ${escapeShellSingle(__filename)}'`;
+  const aliasLine = `alias ocapi='${escapeShellSingle(resolveStableNodePath())} ${escapeShellSingle(__filename)}'`;
   const shellName = path.basename(process.env.SHELL || '').toLowerCase();
   const candidates = [];
   if (shellName.includes('zsh')) candidates.push('.zshrc');
@@ -457,8 +470,19 @@ function ensureOcapiShortcut(options = {}) {
     const targetName = candidates[0];
     const targetPath = path.join(os.homedir(), targetName);
     const current = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, 'utf8') : '';
-    if (/^\s*alias\s+ocapi=/m.test(current) || current.includes(aliasLine)) {
+    if (current.includes(aliasLine)) {
       return { changed: false, exists: true, path: targetPath };
+    }
+    // 已有 alias 但内容不对(常见于 node 升级后旧 Cellar 路径失效):就地替换,而不是放着不管。
+    if (/^\s*alias\s+ocapi=/m.test(current)) {
+      const next = current.replace(/^\s*alias\s+ocapi=.*$/gm, aliasLine);
+      if (next === current) return { changed: false, exists: true, path: targetPath };
+      fs.writeFileSync(targetPath, next);
+      if (verbose) {
+        success('已更新 ocapi 快捷命令(原路径已失效)。');
+        info(`当前终端可执行: source ~/${targetName}`);
+      }
+      return { changed: true, refreshed: true, path: targetPath, aliasLine };
     }
     const prefix = current && !current.endsWith('\n') ? '\n' : '';
     fs.appendFileSync(targetPath, `${prefix}\n# OpenClaw API menu shortcut\n${aliasLine}\n`);
@@ -537,7 +561,9 @@ function addProviderToModelPolicy(defaults = {}, providerId) {
     : null;
   if (!allow) return null;
   const wildcard = `${providerId}/*`;
-  return allow.includes(wildcard) ? [...allow] : [...allow, wildcard];
+  return allow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())
+    ? [...allow]
+    : [...allow, wildcard];
 }
 
 function rewriteProviderModelPolicy(defaults = {}, oldName, newName = '') {
@@ -657,7 +683,6 @@ async function refreshTelegramBotNameFromApi() {
     return name;
   } catch (e) {
     clearTimeout(timeoutId);
-    if (typeof _dbg === 'function') _dbg('refreshTelegramBotNameFromApi', e);
     return '';
   }
 }
@@ -748,8 +773,11 @@ function formatSessionKindLabel(key, entry = {}, duplicateNames = new Set()) {
     const friendlyName = getSessionFriendlyName(key, entry);
     const duplicateTag = friendlyName && duplicateNames.has(friendlyName) ? ` (${target})` : '';
     if (kind === 'direct') {
-      const directName = friendlyName || getDirectChatDisplayName(target);
-      if (directName && directName !== target) return `TG私聊 【${directName}${duplicateTag}】 [${agentId}]`;
+      // 私聊显示机器人名(getDirectChatDisplayName 优先返回 bot 名),而不是对方的 TG 用户名;
+      // 与 getSessionTargetDisplayName 的取值顺序保持一致。
+      const directName = getDirectChatDisplayName(target) || friendlyName;
+      const directTag = directName && duplicateNames.has(directName) ? ` (${target})` : '';
+      if (directName && directName !== target) return `TG私聊 【${directName}${directTag}】 [${agentId}]`;
       return `TG私聊用户 [${agentId}]`;
     }
     if (kind === 'group') {
@@ -953,7 +981,10 @@ async function confirmSyncTelegramSessions(ask, ref) {
     const activeSessionKey = activeSession?.key || '';
     const nameCounts = new Map();
     for (const row of rows) {
-      const name = getSessionFriendlyName(row.key, row.entry) || extractSessionTargetId(row.key) || row.key;
+      const target = extractSessionTargetId(row.key);
+      const isDirect = /^agent:[^:]+:[^:]+:direct:/.test(String(row.key || ''));
+      const name = (isDirect ? getDirectChatDisplayName(target) : '')
+        || getSessionFriendlyName(row.key, row.entry) || target || row.key;
       nameCounts.set(name, (nameCounts.get(name) || 0) + 1);
     }
     const duplicateNames = new Set([...nameCounts.entries()].filter(([, count]) => count > 1).map(([name]) => name));
@@ -2150,6 +2181,9 @@ function askFactory() {
   return ask;
 }
 
+// 只有网络/上游类失败值得重试;参数校验、名称冲突、上游返回空列表重试也是同样结果。
+const RETRYABLE_HELPER_EXIT_CODES = new Set([2]);
+
 function runNode(script, args = [], options = {}) {
   const retry = options.retry === true;
   const label = options.label || path.basename(script || '子脚本');
@@ -2162,8 +2196,8 @@ function runNode(script, args = [], options = {}) {
     ? { stdio: 'inherit' }
     : { input: options.input, encoding: 'utf8', stdio: ['pipe', 'inherit', 'inherit'] };
   let res = spawnSync(process.execPath, [script, ...args], spawnOptions);
-  if (retry && res.status !== 0) {
-    info('首次同步失败,正在重试...');
+  if (retry && RETRYABLE_HELPER_EXIT_CODES.has(res.status)) {
+    info('网络请求失败,正在重试...');
     res = spawnSync(process.execPath, [script, ...args], spawnOptions);
   }
   return typeof res.status === 'number' ? res.status : 1;
@@ -2444,14 +2478,59 @@ async function fetchProviderModelIds(provider, providerId = '') {
   }
 }
 
+
+function guessReasoning(id) {
+  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
+  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
+  const s = String(id).toLowerCase();
+  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
+}
+
 function normalizeModel(displayName, id) {
-  // 只保留确定信息;contextWindow/maxTokens/cost 不再编造,交由 OpenClaw 默认值处理。
+  // 统一写入 1M 上下文 / 128K 输出 / 零成本,避免各服务商口径不一。
   return {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
+    reasoning: guessReasoning(id),
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 1048576,
+    maxTokens: 128000,
   };
 }
+
+// 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
+// 视为手工维护,原样保留。
+const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
+
+function mergeModel(displayName, id, prev) {
+  const fresh = normalizeModel(displayName, id);
+  if (!prev || typeof prev !== 'object') return fresh;
+  const preserved = {};
+  for (const [key, value] of Object.entries(prev)) {
+    if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
+  }
+  return { ...fresh, ...preserved };
+}
+
+function buildPrevModelMap(models) {
+  return new Map((Array.isArray(models) ? models : []).map((m) => [m?.id, m]).filter(([id]) => id));
+}
+
+// agents.defaults.models 只是元数据/别名覆盖表,不影响模型可用性(可用性由
+// models.providers 与 modelPolicy.allow 决定)。同步不再往里写引用,并清掉本
+// provider 遗留的空对象引用;带实际内容的条目(如 alias)保留。
+function clearProviderModelRefs(modelMap, providerName) {
+  const patch = {};
+  const prefix = String(providerName).toLowerCase();
+  for (const [ref, value] of Object.entries(modelMap || {})) {
+    if (String(ref).split('/')[0]?.toLowerCase() !== prefix) continue;
+    const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+    if (isEmptyObject) patch[ref] = null;
+  }
+  return patch;
+}
+
 
 async function backPrompt(ask) {
   console.log(color('操作完成', C.green, C.bold));
@@ -2755,7 +2834,12 @@ async function removeProvider(ask) {
 
 async function syncAllProviders(ask) {
   // 同步本身也是修复入口，必须包含当前被白名单漏掉的 Provider。
-  const rows = providersState({ respectPolicy: false });
+  const allRows = providersState({ respectPolicy: false });
+  // 含点号/斜杠的旧 id 会让 --replace-path 定位错位,与 provider-manage 的拒绝策略保持一致。
+  const rows = allRows.filter((row) => isValidProviderId(row.id));
+  for (const row of allRows.filter((row) => !isValidProviderId(row.id))) {
+    warn(`跳过 ${row.id}:provider id 含非法字符,请先改名为字母/数字/下划线/短横线。`);
+  }
   if (!rows.length) {
     warn('当前没有已配置的 API 提供商。');
     return;
@@ -2794,9 +2878,10 @@ async function syncAllProviders(ask) {
       addedTotal += added.length;
       removedTotal += removed.length;
       if (added.length === 0 && removed.length === 0) unchangedProviders++;
+      const prevModels = buildPrevModelMap(beforeProvider.models);
       const providerPatch = {
         ...beforeProvider,
-        models: item.ids.map((id) => normalizeModel(row.displayName || row.id, id)),
+        models: item.ids.map((id) => mergeModel(row.displayName || row.id, id, prevModels.get(id))),
       };
       patchPayload.models.providers[row.id] = providerPatch;
       if (!nextCfg.models) nextCfg.models = {};
@@ -2812,16 +2897,10 @@ async function syncAllProviders(ask) {
         for (const msg of repairedEntries.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
       }
       replacePaths.push(`models.providers.${row.id}.models`);
-      patchPayload.agents.defaults.models[`${row.id}/*`] = {};
+      Object.assign(patchPayload.agents.defaults.models, clearProviderModelRefs(beforeCfg.agents?.defaults?.models, row.id));
       if (nextModelPolicyAllow) {
         const wildcard = `${row.id}/*`;
-        if (!nextModelPolicyAllow.includes(wildcard)) nextModelPolicyAllow.push(wildcard);
-      }
-      for (const [ref, value] of Object.entries(beforeCfg.agents?.defaults?.models || {})) {
-        if (ref === `${row.id}/*`) continue;
-        const [pfx] = ref.split('/');
-        const isEmptyObject = value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
-        if (pfx.toLowerCase() === row.id.toLowerCase() && isEmptyObject) patchPayload.agents.defaults.models[ref] = null;
+        if (!nextModelPolicyAllow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())) nextModelPolicyAllow.push(wildcard);
       }
       const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
       const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white);
@@ -2841,7 +2920,9 @@ async function syncAllProviders(ask) {
   }
   if (successCount > 0) {
     const selectionPatch = buildDefaultSelectionPatch(nextCfg.agents?.defaults || {}, beforeCfg.agents?.defaults || {});
-    patchPayload.agents.defaults = { ...selectionPatch, models: patchPayload.agents.defaults.models };
+    const modelRefPatch = patchPayload.agents.defaults.models;
+    patchPayload.agents.defaults = { ...selectionPatch };
+    if (Object.keys(modelRefPatch).length) patchPayload.agents.defaults.models = modelRefPatch;
     if (nextModelPolicyAllow) patchPayload.agents.defaults.modelPolicy = { allow: nextModelPolicyAllow };
     info('正在写入配置，请稍等...');
     const patchRes = applyConfigPatch(patchPayload, { replacePaths });
@@ -4140,8 +4221,11 @@ async function backupOpenClaw(ask) {
   info('正在备份配置，请稍等...');
   const res = spawnSync('tar', ['-czf', output, '-C', STATE_DIR, '.'], { stdio: 'inherit' });
   if (res.status === 0) {
+    // 备份里含全部 provider API Key、Telegram Bot Token、Gateway Token,限制为仅本人可读。
+    try { fs.chmodSync(output, 0o600); } catch {}
     success('OpenClaw 配置备份成功。');
     info(`备份文件:${output}`);
+    info('该文件含明文密钥,权限已设为 600,请勿随意分享或上传。');
   } else {
     danger('OpenClaw 配置备份失败,请检查磁盘空间或权限。');
   }
@@ -4182,6 +4266,7 @@ async function uninstallOpenClaw(ask) {
 async function purgeOpenClaw(ask) {
   section('彻底卸载 OpenClaw');
   danger('危险操作:将卸载 OpenClaw,并删除 ~/.openclaw 全部配置和数据。');
+  warn('注意:ocapi 脚本本身就放在该目录下,一并会被删除。');
   warn('建议先执行 [16] 备份 OpenClaw 配置。');
   const confirm = await ask(color('高危确认：彻底卸载 OpenClaw？(y/N): ', C.red, C.bold));
   if (confirm.toLowerCase() !== 'y') {
