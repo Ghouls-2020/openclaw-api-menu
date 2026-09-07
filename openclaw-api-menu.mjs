@@ -39,7 +39,7 @@ const modelStatusCache = new Map();
 // 维护规矩:
 // 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 4个脚本 → push main → push tag(同名版本号)。
 //    GitHub Repo: github.com/Ghouls-2020/openclaw-api-menu
-//    脚本文件(4个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs / list-providers-cn.mjs
+//    脚本文件(3个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs
 //    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
 //    SSH Deploy Key:若VPS重装,需重新配置 ~/.ssh/config 中的 github-openclaw-api-menu 别名。
 // 1. 每次修改完成后,必须在 MENU_VERSION_HISTORY 顶部新增当前版本记录,当前版本号/更新时间会自动从该记录读取
@@ -60,6 +60,14 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.1.8',
+    updatedAt: '2026-09-07',
+    summary: [
+      '移除独立的 list-providers-cn.mjs(只读体检工具,主菜单的服务商列表/状态检测已覆盖同样功能)。',
+      '脚本自检与快速体检不再要求该文件存在。',
+    ],
+  },
   {
     version: 'v0.1.7',
     updatedAt: '2026-09-07',
@@ -4639,7 +4647,7 @@ async function purgeOpenClaw(ask) {
 
 async function repairHelperScripts(ask) {
   renderScreenTitle('检查 / 修复脚本依赖');
-  const targetFiles = ['add-provider.mjs', 'provider-manage.mjs', 'list-providers-cn.mjs'];
+  const targetFiles = ['add-provider.mjs', 'provider-manage.mjs'];
   const missingScripts = targetFiles.filter((name) => !fs.existsSync(path.join(__dirname, name)));
   ensureJsonFile(DISPLAY_NAMES, {}, { label: 'provider-display-names.json', verbose: true });
   ensureJsonFile(RECENT_MODELS, [], { label: 'recent-models.json', verbose: true });
@@ -4659,7 +4667,7 @@ async function quickHealthcheck(ask) {
   renderScreenTitle('快速体检');
   const gateway = inspectGatewayStatus({ force: true });
   const state = loadWorkspaceState();
-  const requiredScripts = ['add-provider.mjs', 'provider-manage.mjs', 'list-providers-cn.mjs'];
+  const requiredScripts = ['add-provider.mjs', 'provider-manage.mjs'];
   const missingScripts = requiredScripts.filter((name) => !fs.existsSync(path.join(__dirname, name)));
   const currentVersion = getOpenClawVersion();
   const latestVersion = getLatestOpenClawVersion();
