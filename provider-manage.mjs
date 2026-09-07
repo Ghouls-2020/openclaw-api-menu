@@ -61,9 +61,14 @@ function ensureJsonFile(file, fallback) {
       return parsed;
     }
   } catch {
+    // JSON 解析失败:备份成 .corrupt- 后重置,不要再往下走 .invalid- 分支,
+    // 否则同一次损坏会同时留下 .corrupt- 和 .invalid- 两份一模一样的备份。
     const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     try { fs.copyFileSync(file, corruptPath, fs.constants.COPYFILE_EXCL); } catch {}
+    atomicWriteJsonFile(file, fallback);
+    return structuredClone(fallback);
   }
+  // 能解析但结构不对(比如该是对象却是数组):另存成 .invalid- 再重置。
   try {
     const invalidPath = `${file}.invalid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     if (fs.existsSync(file)) fs.copyFileSync(file, invalidPath, fs.constants.COPYFILE_EXCL);
@@ -339,30 +344,86 @@ function guessReasoning(id) {
   return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
 }
 
-function normalizeModel(displayName, id) {
+// ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
+// 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
+// 成本恒 0 会让用量统计永远是 0。现在改成只写 /models 真给了的值,给不出就不写,
+// 让 OpenClaw 用它自己的默认值。
+const FABRICATED_CONTEXT_WINDOW = 1048576;
+const FABRICATED_MAX_TOKENS = 128000;
+
+function pickFirstPositiveInt(...values) {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return Math.floor(num);
+  }
+  return null;
+}
+
+// 从 /models 原始行里取真实上下文/输出上限;各家字段名不统一,按常见口径挨个试。
+function extractModelLimits(raw) {
+  if (!raw || typeof raw !== 'object') return { contextWindow: null, maxTokens: null };
+  const top = raw.top_provider && typeof raw.top_provider === 'object' ? raw.top_provider : {};
+  const meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {};
   return {
+    contextWindow: pickFirstPositiveInt(
+      raw.context_length, raw.contextWindow, raw.context_window,
+      raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
+      top.context_length, meta.context_length,
+    ),
+    maxTokens: pickFirstPositiveInt(
+      raw.max_output_tokens, raw.maxTokens, raw.max_tokens,
+      raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
+    ),
+  };
+}
+
+// pricing 各家口径不一(每 token / 每千 token / 每百万 token,还有字符串和不同币种),
+// 猜错比不写更糟,所以脚本一律不再写 cost。
+function isFabricatedCost(cost) {
+  if (!cost || typeof cost !== 'object') return false;
+  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
+}
+
+function normalizeModel(displayName, id, raw = null) {
+  const model = {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    reasoning: guessReasoning(id),
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
+    reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
   };
+  const { contextWindow, maxTokens } = extractModelLimits(raw);
+  if (contextWindow) model.contextWindow = contextWindow;
+  if (maxTokens) model.maxTokens = maxTokens;
+  return model;
 }
+// ===== ocapi:model-meta 结束 =====
 
 // 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
 // 视为手工维护,原样保留。
 const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
 
-function mergeModel(displayName, id, prev) {
-  const fresh = normalizeModel(displayName, id);
+function mergeModel(displayName, id, prev, raw = null) {
+  const fresh = normalizeModel(displayName, id, raw);
   if (!prev || typeof prev !== 'object') return fresh;
   const preserved = {};
   for (const [key, value] of Object.entries(prev)) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
   }
-  return { ...fresh, ...preserved };
+  const result = { ...fresh, ...preserved };
+  // reasoning 是用户的显式选择(v0.1.5:让服务商下所有模型走思考),旧值优先,没有才按 id 猜,
+  // 避免同步把手工关掉的模型又打开。
+  if (typeof prev.reasoning === 'boolean') result.reasoning = prev.reasoning;
+  // 上游没给上限时,保留手工填过的真实值,但丢掉历史上写死的 1M / 128K 占位值。
+  if (result.contextWindow === undefined && prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
+    result.contextWindow = prev.contextWindow;
+  }
+  if (result.maxTokens === undefined && prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
+    result.maxTokens = prev.maxTokens;
+  }
+  // cost 不由脚本编造;手工填过的非全零成本保留,历史上写死的全零成本丢掉。
+  if (prev.cost && !isFabricatedCost(prev.cost)) result.cost = prev.cost;
+  return result;
 }
 
 function buildPrevModelMap(models) {
@@ -576,7 +637,9 @@ if (action === 'sync') {
     let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
     const displayName = getProviderDisplayName(providerName);
     const prevModels = buildPrevModelMap(provider.models);
-    provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id)));
+    // Gateway 的 models.list 只是回显本地配置,拿不到上游真实规格,所以不传 raw:
+    // 上下文/输出上限交给 mergeModel 的"保留手工值、丢弃写死占位值"规则处理。
+    provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id), null));
     const addedModels = ids.filter(id => !prevModels.has(id)).length;
     const removedModels = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
     const modelRefPatch = clearProviderModelRefs(modelMap, providerName);
@@ -645,7 +708,13 @@ if (action === 'sync') {
   let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
   const displayName = getProviderDisplayName(providerName);
   const prevModels = buildPrevModelMap(provider.models);
-  provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id)));
+  // 保留 /models 原始行,mergeModel 要从里面取真实的上下文/输出上限。
+  const rawById = new Map();
+  for (const row of rows) {
+    const rowId = row?.id;
+    if (rowId && !rawById.has(rowId)) rawById.set(rowId, row);
+  }
+  provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id), rawById.get(id)));
   const added = ids.filter(id => !prevModels.has(id)).length;
   const removed = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
   const modelRefPatch = clearProviderModelRefs(modelMap, providerName);

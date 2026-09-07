@@ -98,9 +98,14 @@ function ensureJsonFile(file, fallback) {
       return parsed;
     }
   } catch {
+    // JSON 解析失败:备份成 .corrupt- 后重置,不要再往下走 .invalid- 分支,
+    // 否则同一次损坏会同时留下 .corrupt- 和 .invalid- 两份一模一样的备份。
     const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     try { fs.copyFileSync(file, corruptPath, fs.constants.COPYFILE_EXCL); } catch {}
+    atomicWriteJsonFile(file, fallback);
+    return structuredClone(fallback);
   }
+  // 能解析但结构不对(比如该是对象却是数组):另存成 .invalid- 再重置。
   try {
     const invalidPath = `${file}.invalid-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     if (fs.existsSync(file)) fs.copyFileSync(file, invalidPath, fs.constants.COPYFILE_EXCL);
@@ -162,17 +167,60 @@ function clearProviderModelRefs(modelMap, providerName) {
 }
 
 
-function normalizeModel(displayName, id) {
+// ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
+// 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
+// 成本恒 0 会让用量统计永远是 0。现在改成只写 /models 真给了的值,给不出就不写,
+// 让 OpenClaw 用它自己的默认值。
+const FABRICATED_CONTEXT_WINDOW = 1048576;
+const FABRICATED_MAX_TOKENS = 128000;
+
+function pickFirstPositiveInt(...values) {
+  for (const value of values) {
+    const num = Number(value);
+    if (Number.isFinite(num) && num > 0) return Math.floor(num);
+  }
+  return null;
+}
+
+// 从 /models 原始行里取真实上下文/输出上限;各家字段名不统一,按常见口径挨个试。
+function extractModelLimits(raw) {
+  if (!raw || typeof raw !== 'object') return { contextWindow: null, maxTokens: null };
+  const top = raw.top_provider && typeof raw.top_provider === 'object' ? raw.top_provider : {};
+  const meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {};
   return {
+    contextWindow: pickFirstPositiveInt(
+      raw.context_length, raw.contextWindow, raw.context_window,
+      raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
+      top.context_length, meta.context_length,
+    ),
+    maxTokens: pickFirstPositiveInt(
+      raw.max_output_tokens, raw.maxTokens, raw.max_tokens,
+      raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
+    ),
+  };
+}
+
+// pricing 各家口径不一(每 token / 每千 token / 每百万 token,还有字符串和不同币种),
+// 猜错比不写更糟,所以脚本一律不再写 cost。
+function isFabricatedCost(cost) {
+  if (!cost || typeof cost !== 'object') return false;
+  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
+}
+
+function normalizeModel(displayName, id, raw = null) {
+  const model = {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
     reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 1048576,
-    maxTokens: 128000,
   };
+  const { contextWindow, maxTokens } = extractModelLimits(raw);
+  if (contextWindow) model.contextWindow = contextWindow;
+  if (maxTokens) model.maxTokens = maxTokens;
+  return model;
 }
+// ===== ocapi:model-meta 结束 =====
 
 function inferProviderDisplayName(provider, fallback = '') {
   if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
@@ -306,7 +354,13 @@ if (!ids.length) {
   process.exit(3);
 }
 
-const providerModels = ids.map(id => normalizeModel(providerDisplayName, id));
+// 保留 /models 原始行,normalizeModel 要从里面取真实的上下文/输出上限。
+const rawById = new Map();
+for (const row of rows) {
+  const rowId = row?.id;
+  if (rowId && !rawById.has(rowId)) rawById.set(rowId, row);
+}
+const providerModels = ids.map(id => normalizeModel(providerDisplayName, id, rawById.get(id)));
 const modelPolicyAllow = buildModelPolicyWithProvider(cfg.agents.defaults, providerName);
 const defaultsPatch = {};
 const staleModelRefs = clearProviderModelRefs(cfg.agents?.defaults?.models, providerName);
