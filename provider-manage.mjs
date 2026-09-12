@@ -17,6 +17,7 @@ const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.op
 const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const FETCH_TIMEOUT_MS = 8000;
+const CONFIG_PATCH_TIMEOUT_MS = 30000;
 if (!fs.existsSync(CONFIG)) {
   console.error(`OpenClaw config not found: ${CONFIG}`);
   process.exit(1);
@@ -98,7 +99,16 @@ function runConfigPatch(patch, extraArgs = []) {
     input: JSON.stringify(patch, null, 2),
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
+    timeout: CONFIG_PATCH_TIMEOUT_MS,
   });
+}
+
+function printConfigPatchFailure(result, label = 'Failed to apply config patch') {
+  console.error(label);
+  if (result?.error?.code === 'ETIMEDOUT') console.error(`配置写入超时:${CONFIG_PATCH_TIMEOUT_MS}ms`);
+  else if (result?.error) console.error(result.error.message);
+  if (result?.stdout) console.error(String(result.stdout).trim());
+  if (result?.stderr) console.error(String(result.stderr).trim());
 }
 
 let cfg;
@@ -349,9 +359,6 @@ function guessReasoning(id) {
 // 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
 // 成本恒 0 会让用量统计永远是 0。现在改成只写 /models 真给了的值,给不出就不写,
 // 让 OpenClaw 用它自己的默认值。
-const FABRICATED_CONTEXT_WINDOW = 1048576;
-const FABRICATED_MAX_TOKENS = 128000;
-
 function pickFirstPositiveInt(...values) {
   for (const value of values) {
     const num = Number(value);
@@ -361,30 +368,29 @@ function pickFirstPositiveInt(...values) {
 }
 
 // 从 /models 原始行里取真实上下文/输出上限;各家字段名不统一,按常见口径挨个试。
+// 不认 snake_case 的 max_tokens:它和请求参数同名,个别服务商在模型目录里回显的是
+// "默认输出长度"(如 4096)而不是上限,当成上限写进去反而会把输出压低。
+// 只认语义明确的 max_output_tokens / max_completion_tokens。
 function extractModelLimits(raw) {
   if (!raw || typeof raw !== 'object') return { contextWindow: null, maxTokens: null };
   const top = raw.top_provider && typeof raw.top_provider === 'object' ? raw.top_provider : {};
   const meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {};
-  return {
-    contextWindow: pickFirstPositiveInt(
-      raw.context_length, raw.contextWindow, raw.context_window,
-      raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
-      top.context_length, meta.context_length,
-    ),
-    maxTokens: pickFirstPositiveInt(
-      raw.max_output_tokens, raw.maxTokens, raw.max_tokens,
-      raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
-    ),
-  };
+  const contextWindow = pickFirstPositiveInt(
+    raw.context_length, raw.contextWindow, raw.context_window,
+    raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
+    top.context_length, meta.context_length,
+  );
+  let maxTokens = pickFirstPositiveInt(
+    raw.max_output_tokens, raw.maxTokens,
+    raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
+  );
+  // 输出上限不可能大于上下文窗口;超了说明这个字段不是我们以为的含义,宁可不写。
+  if (maxTokens && contextWindow && maxTokens > contextWindow) maxTokens = null;
+  return { contextWindow, maxTokens };
 }
 
 // pricing 各家口径不一(每 token / 每千 token / 每百万 token,还有字符串和不同币种),
 // 猜错比不写更糟,所以脚本一律不再写 cost。
-function isFabricatedCost(cost) {
-  if (!cost || typeof cost !== 'object') return false;
-  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
-}
-
 function normalizeModel(displayName, id, raw = null) {
   const model = {
     id,
@@ -399,6 +405,16 @@ function normalizeModel(displayName, id, raw = null) {
 }
 // ===== ocapi:model-meta 结束 =====
 
+// 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
+const FABRICATED_CONTEXT_WINDOW = 1048576;
+const FABRICATED_MAX_TOKENS = 128000;
+
+// 全零成本同样是脚本编的,不是人工填的;人工填过的真实成本才保留。
+function isFabricatedCost(cost) {
+  if (!cost || typeof cost !== 'object') return false;
+  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
+}
+
 // 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
 // 视为手工维护,原样保留。
 const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
@@ -411,17 +427,16 @@ function mergeModel(displayName, id, prev, raw = null) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
   }
   const result = { ...fresh, ...preserved };
-  // reasoning 是用户的显式选择(v0.1.5:让服务商下所有模型走思考),旧值优先,没有才按 id 猜,
-  // 避免同步把手工关掉的模型又打开。
+  // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
+  // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
+  // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
   if (typeof prev.reasoning === 'boolean') result.reasoning = prev.reasoning;
-  // 上游没给上限时,保留手工填过的真实值,但丢掉历史上写死的 1M / 128K 占位值。
-  if (result.contextWindow === undefined && prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
+  if (prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
     result.contextWindow = prev.contextWindow;
   }
-  if (result.maxTokens === undefined && prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
+  if (prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
     result.maxTokens = prev.maxTokens;
   }
-  // cost 不由脚本编造;手工填过的非全零成本保留,历史上写死的全零成本丢掉。
   if (prev.cost && !isFabricatedCost(prev.cost)) result.cost = prev.cost;
   return result;
 }
@@ -522,9 +537,7 @@ if (action === 'rename') {
     },
   });
   if (patchRes.status !== 0) {
-    console.error('Failed to apply config patch');
-    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
-    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    printConfigPatchFailure(patchRes);
     process.exit(patchRes.status || 4);
   }
   writeJson(DISPLAY_NAMES, displayNames);
@@ -585,9 +598,7 @@ if (action === 'remove') {
     agents: agentsPatch,
   });
   if (patchRes.status !== 0) {
-    console.error('Failed to apply config patch');
-    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
-    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    printConfigPatchFailure(patchRes);
     process.exit(patchRes.status || 4);
   }
   writeJson(DISPLAY_NAMES, displayNames);
@@ -652,7 +663,7 @@ if (action === 'sync') {
     const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: defaultsPatch } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
     const patchRes = runConfigPatch(patch, ['--replace-path', `models.providers.${providerName}.models`]);
-    if (patchRes.status !== 0) { console.error('Failed to apply config patch'); if (patchRes.stdout) console.error(String(patchRes.stdout).trim()); if (patchRes.stderr) console.error(String(patchRes.stderr).trim()); process.exit(patchRes.status || 4); }
+    if (patchRes.status !== 0) { printConfigPatchFailure(patchRes); process.exit(patchRes.status || 4); }
     console.log(`Synced provider: ${providerName}`);
     console.log(`Models now present: ${ids.length}`);
     console.log(`Added models: ${addedModels}`);
@@ -740,9 +751,7 @@ if (action === 'sync') {
     },
   }, ['--replace-path', `models.providers.${providerName}.models`]);
   if (patchRes.status !== 0) {
-    console.error('Failed to apply config patch');
-    if (patchRes.stdout) console.error(String(patchRes.stdout).trim());
-    if (patchRes.stderr) console.error(String(patchRes.stderr).trim());
+    printConfigPatchFailure(patchRes);
     process.exit(patchRes.status || 4);
   }
   console.log(`Synced provider: ${providerName}`);

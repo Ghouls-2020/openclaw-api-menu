@@ -9,9 +9,11 @@ import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const WORKSPACE = path.resolve(__dirname, '..');
 // 统一状态目录:全部脚本共用同一套 OPENCLAW_STATE_DIR,避免主菜单与子脚本读写不同配置。
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
+// 别用 __dirname/.. 推 workspace:脚本被挪进 scripts/ocapi/ 之后,这么算会落在
+// workspace/scripts 上而不是 workspace。统一从 STATE_DIR 推,跟 getWorkspaceSkillsDir 一致。
+const WORKSPACE = path.join(STATE_DIR, 'workspace');
 const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
@@ -25,6 +27,7 @@ const PINNED_DIRECT_SESSION_IDS = new Set([]);
 const MODEL_STATUS_TIMEOUT_MS = 5000;
 const PROVIDER_SYNC_FETCH_TIMEOUT_MS = 8000;
 const PROVIDER_STATUS_TIMEOUT_MS = 8000;
+const CONFIG_PATCH_TIMEOUT_MS = 30000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_DEFAULT_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
 const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
@@ -32,12 +35,10 @@ const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
 const MODEL_STATUS_CACHE_SCHEMA = 'v7';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const GATEWAY_MENU_CACHE_TTL_MS = 2 * 60 * 1000;
-const GATEWAY_RESTART_CHECK_INTERVAL_MS = 10 * 1000;
-const GATEWAY_RESTART_CHECK_MAX_ATTEMPTS = 20;
 const VERSION_HISTORY_VISIBLE_COUNT = 20;
 const modelStatusCache = new Map();
 // 维护规矩:
-// 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 4个脚本 → push main → push tag(同名版本号)。
+// 0. 发布规则:每次修改本脚本后必须: bump版本号 → commit 3个脚本 → push main → push tag(同名版本号)。
 //    GitHub Repo: github.com/Ghouls-2020/openclaw-api-menu
 //    脚本文件(3个,放repo根目录):openclaw-api-menu.mjs / add-provider.mjs / provider-manage.mjs
 //    版本号从 MENU_VERSION_HISTORY[0].version 读取;patch递增;GitHub Actions 自动从 tag 生成 Release
@@ -61,11 +62,44 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.11',
+    updatedAt: '2026-09-12',
+    summary: [
+      '新增 Provider 时精确替换模型数组,避免 Gateway 运行时模型目录未及时刷新。',
+      '配置 patch 统一增加 30 秒超时,并明确提示写入超时。',
+      'add-provider 仅接受 stdin 传入 API Key,不再允许密钥出现在命令行参数和 shell history 中。',
+    ],
+  },
+  {
+    version: 'v0.1.10',
+    updatedAt: '2026-09-11',
+    summary: [
+      '修复模型检测误报"可用":HTTP 200 的流里只有错误块、或只有 role 块没有内容时,不再判为可用。',
+      '流里的错误信息会被带出来,照常归类为余额不足 / 密钥无效 / 模型不存在等。',
+    ],
+  },
+  {
+    version: 'v0.1.9',
+    updatedAt: '2026-09-08',
+    summary: [
+      '[14] 降级前检查数据库 schema 版本并二次确认,避免装完旧版才发现 Gateway 起不来。',
+      'OpenClaw 各 sqlite 库带 user_version 且只向上迁移,旧版打开更高 schema 会直接拒绝启动。',
+      '降级后启动失败时,自动从日志识别 schema 拒绝并给出恢复路径(恢复备份 或 装回新版)。',
+      '已验证兼容 OpenClaw 2026.9.3。',
+    ],
+  },
+  {
     version: 'v0.1.8',
     updatedAt: '2026-09-07',
     summary: [
       '移除独立的 list-providers-cn.mjs(只读体检工具,主菜单的服务商列表/状态检测已覆盖同样功能)。',
       '脚本自检与快速体检不再要求该文件存在。',
+      '[16] 备份改用 sqlite .backup 取一致性快照,不再热拷贝运行中的库,备份期间无需停 Gateway。',
+      '菜单动作加错误边界:单个功能报错只提示并回主菜单,不再整个退出并打印堆栈。',
+      '技能安装/删除的文件操作加防护,失败清理半成品;复制保留执行位与软链接。',
+      '修复多 Agent 共用同一 TG 会话时只有第一条能拿到名字;SSE 空 data: 行不再截断解析。',
+      '修复 [16] 备份中间文件与成品同名,收尾清理会把刚生成的备份一起删掉(报成功却没有文件)。',
+      'stdin 在提问中途关闭时按"0"收尾,不再让脚本停在提示符处静默退出。',
     ],
   },
   {
@@ -73,7 +107,7 @@ const MENU_VERSION_HISTORY = [
     updatedAt: '2026-09-07',
     summary: [
       '停止编造模型规格:不再写死 1M 上下文 / 128K 输出 / 零成本,只写 /models 真返回的值。',
-      '同步会丢弃历史写死的占位规格,但保留手工填过的真实值和 reasoning 选择。',
+      '同步会丢弃历史写死的占位规格;手工填过的规格和 reasoning 选择优先于上游,不会被覆盖。',
       'macOS 支持:服务卸载改走官方 gateway uninstall + launchd,不再空跑 systemctl。',
       '诊断日志在 macOS 读 ~/Library/Logs/openclaw/gateway.log,不再依赖 journalctl。',
       '降级恢复的环境变量在 macOS 写入 launchd service-env,用完自动还原。',
@@ -81,7 +115,9 @@ const MENU_VERSION_HISTORY = [
       '改 provider id 时同步改写常用模型和 TG 会话覆盖,不再往配置里造空壳引用。',
       '添加 API 的校验失败不再一闪而过;列表页不再在检测完成后仍显示"正在检测"。',
       '彻底卸载会一并清掉 shell 里失效的 ocapi alias;备份文件全程 600 权限。',
-      '清理死代码:explainModelError / verifyFailed / 未使用常量,并修好会话名去重。',
+      '清理死代码:7 个从未被调用的函数与一批未使用常量(约 150 行),修好会话名去重。',
+      '修正 WORKSPACE 路径:脚本移入 scripts/ocapi/ 后它一直指向上一级的 scripts 目录。',
+      '统一"提示后停顿":另外 6 处校验失败不再一闪而过就跳回主菜单。',
     ],
   },
   {
@@ -621,17 +657,6 @@ function isModelAllowedByPolicy(cfg, ref, agentId = '') {
   });
 }
 
-function addProviderToModelPolicy(defaults = {}, providerId) {
-  const allow = Array.isArray(defaults?.modelPolicy?.allow) && defaults.modelPolicy.allow.length > 0
-    ? defaults.modelPolicy.allow
-    : null;
-  if (!allow) return null;
-  const wildcard = `${providerId}/*`;
-  return allow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())
-    ? [...allow]
-    : [...allow, wildcard];
-}
-
 function rewriteProviderModelPolicy(defaults = {}, oldName, newName = '') {
   const allow = Array.isArray(defaults?.modelPolicy?.allow) && defaults.modelPolicy.allow.length > 0
     ? defaults.modelPolicy.allow
@@ -672,13 +697,6 @@ function rewriteProviderRefsInAgentEntries(config, oldName, newName) {
     }
   }
   return changed;
-}
-
-function getConfiguredAgentIds() {
-  const cfg = readJson(CONFIG, {});
-  const ids = Object.keys(cfg?.agents?.entries || {}).filter((id) => id.trim());
-  if (!ids.includes('main')) ids.unshift('main');
-  return ids;
 }
 
 function getAgentIdFromSessionKey(key) {
@@ -757,19 +775,24 @@ async function refreshTelegramBotNameFromApi() {
 async function hydrateTelegramSessionNames(rows = []) {
   const token = getTelegramBotToken();
   if (!token) return rows;
-  const seenTargets = new Set();
-  const targets = rows
-    .filter((row) => /^agent:[^:]+:telegram:(group|direct):/.test(String(row.key || '')))
-    .map((row) => ({ row, target: extractSessionTargetId(row.key) }))
-    .filter(({ target }) => {
-      if (!target || seenTargets.has(String(target))) return false;
-      seenTargets.add(String(target));
-      return true;
-    });
-  await Promise.all(targets.map(async ({ row, target }) => {
+  // 同一个群/私聊可能出现在多个 Agent 的会话里。按 target 分组:请求只发一次,
+  // 但结果要回填给这一组的每一行,否则除第一行外都会没有名字。
+  const groups = new Map();
+  for (const row of rows) {
+    if (!/^agent:[^:]+:telegram:(group|direct):/.test(String(row.key || ''))) continue;
+    const target = extractSessionTargetId(row.key);
+    if (!target) continue;
+    const key = String(target);
+    if (!groups.has(key)) groups.set(key, { target, rows: [] });
+    groups.get(key).rows.push(row);
+  }
+  const applyEntry = (groupRows, entry) => {
+    for (const item of groupRows) item.entry = { ...item.entry, ...entry };
+  };
+  await Promise.all([...groups.values()].map(async ({ target, rows: groupRows }) => {
     const cached = telegramChatNameCache.get(String(target));
     if (cached && Date.now() - cached.ts < TELEGRAM_BOT_NAME_CACHE_TTL_MS) {
-      row.entry = { ...row.entry, ...cached.entry };
+      applyEntry(groupRows, cached.entry);
       return;
     }
     try {
@@ -786,7 +809,7 @@ async function hydrateTelegramSessionNames(rows = []) {
         ? { groupSubject: name, chatTitle: name }
         : { peerName: name, chatTitle: name };
       telegramChatNameCache.set(String(target), { entry, ts: Date.now() });
-      row.entry = { ...row.entry, ...entry };
+      applyEntry(groupRows, entry);
     } catch {}
   }));
   return rows;
@@ -1377,6 +1400,7 @@ function applyConfigPatch(patch, options = {}) {
     input: JSON.stringify(patch, null, 2),
     encoding: 'utf8',
     maxBuffer: 8 * 1024 * 1024,
+    timeout: CONFIG_PATCH_TIMEOUT_MS,
   });
 }
 
@@ -1521,13 +1545,22 @@ function listInstalledSkills() {
   }
 }
 
+// 技能目录里可能有需要执行位的脚本和软链接;直接 copyFileSync 会丢权限、并把软链接
+// 解引用成普通文件。这里保留两者。
 function copyDirRecursive(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDirRecursive(srcPath, destPath);
-    else if (entry.isFile()) fs.copyFileSync(srcPath, destPath);
+    if (entry.isSymbolicLink()) {
+      fs.symlinkSync(fs.readlinkSync(srcPath), destPath);
+    } else if (entry.isDirectory()) {
+      copyDirRecursive(srcPath, destPath);
+      try { fs.chmodSync(destPath, fs.statSync(srcPath).mode & 0o7777); } catch {}
+    } else if (entry.isFile()) {
+      fs.copyFileSync(srcPath, destPath);
+      try { fs.chmodSync(destPath, fs.statSync(srcPath).mode & 0o7777); } catch {}
+    }
   }
 }
 
@@ -1806,18 +1839,25 @@ function assembleChatCompletionSSE(rawText) {
   let returnedModel = '';
   let content = '';
   let reasoningContent = '';
+  let finishReason = '';
+  let streamError = null;
   let usage = null;
   let chunkCount = 0;
   for (const rawLine of lines) {
     const line = rawLine.trim();
     if (!line || !line.startsWith('data:')) continue;
     const jsonStr = line.slice(5).trim();
-    if (!jsonStr || jsonStr === '[DONE]') break;
+    if (jsonStr === '[DONE]') break;
+    // 空的 data: 行只是心跳/分隔,跳过即可;以前这里 break 会把后面的内容整段丢掉。
+    if (!jsonStr) continue;
     try {
       const chunk = JSON.parse(jsonStr);
       chunkCount += 1;
       if (!returnedModel && chunk?.model) returnedModel = String(chunk.model);
       if (chunk?.usage) usage = chunk.usage;
+      // 中转站常先回 HTTP 200 再在流里报错(data: {"error":...}),以前这里直接丢掉,导致报错也被判成可用。
+      if (chunk?.error && !streamError) streamError = chunk.error;
+      if (chunk?.choices?.[0]?.finish_reason) finishReason = String(chunk.choices[0].finish_reason);
       const delta = chunk?.choices?.[0]?.delta;
       if (!delta) continue;
       if (delta.content) content += String(delta.content);
@@ -1826,9 +1866,14 @@ function assembleChatCompletionSSE(rawText) {
     } catch {}
   }
   if (chunkCount <= 0) return null;
+  // 已经吐出过内容说明模型确实在响应,尾部报错不影响测活;一个字没出就报错才算失败。
+  if (streamError && !content && !reasoningContent) {
+    const message = typeof streamError === 'string' ? streamError : (streamError.message || JSON.stringify(streamError));
+    return { model: returnedModel || undefined, error: { message }, isStreamAssembled: true, _chunkCount: chunkCount };
+  }
   return {
     model: returnedModel || undefined,
-    choices: [{ message: { role: 'assistant', content: content || null, reasoning_content: reasoningContent || undefined } }],
+    choices: [{ message: { role: 'assistant', content: content || null, reasoning_content: reasoningContent || undefined }, finish_reason: finishReason || undefined }],
     usage,
     isStreamAssembled: true,
     _chunkCount: chunkCount,
@@ -1845,9 +1890,12 @@ function normalizeProbeSuccessShape(endpoint, data) {
   if (!Array.isArray(data.choices) || data.choices.length <= 0) return false;
   const firstChoice = data.choices[0] || {};
   const message = firstChoice.message || {};
-  const content = typeof message.content === 'string' ? message.content.trim() : '';
-  const reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content.trim() : '';
-  return !!(content || reasoning || firstChoice.finish_reason || data.isStreamAssembled);
+  // 不 trim:很多模型第一个 token 就是换行,那也是模型在正常输出。
+  const content = typeof message.content === 'string' ? message.content : '';
+  const reasoning = typeof message.reasoning_content === 'string' ? message.reasoning_content : '';
+  const finishReason = String(firstChoice.finish_reason || '').toLowerCase();
+  // 以前这里还有 `|| data.isStreamAssembled`:只要是流就算成功,只有 role 块的流也会被判成可用。
+  return !!(content || reasoning || (finishReason && finishReason !== 'error'));
 }
 
 function classifyProbeFailure({ endpoint, res, data, parseError }) {
@@ -1893,7 +1941,8 @@ function classifyProbeFailure({ endpoint, res, data, parseError }) {
     return { status: 'failed', error: summarizeErrorMessage(data.error.message || data.error || '接口返回错误') };
   }
   if (!normalizeProbeSuccessShape(endpoint, data)) {
-    return { status: 'incompatible', error: summarizeErrorMessage(`响应结构异常:${endpoint === 'responses' ? '无output/status' : '无choices数组'}`) };
+    const shapeHint = endpoint === 'responses' ? '无output/status' : (data?.isStreamAssembled ? '流里没有任何内容' : '无choices数组');
+    return { status: 'incompatible', error: summarizeErrorMessage(`响应结构异常:${shapeHint}`) };
   }
   return { status: 'available', error: null };
 }
@@ -1927,8 +1976,9 @@ async function readChatCompletionProbeStream(res) {
       const hasValidChoice = Array.isArray(chunk?.choices) && chunk.choices.length > 0;
       const hasRealContent = delta?.content || delta?.reasoning_content || delta?.thinking;
       const finishReason = chunk?.choices?.[0]?.finish_reason;
-      // 纯 role chunk(如 {role:"assistant"})不等同于模型可用,等后续真的有内容/reasoning了再判定
-      if (hasValidChoice && (hasRealContent || finishReason)) {
+      // 纯 role chunk(如 {role:"assistant"})不等同于模型可用,等后续真的有内容/reasoning了再判定。
+      // 带 error 的块也不能提前判可用:OpenRouter 这类流中报错会同时给 finish_reason:"error"。
+      if (hasValidChoice && !chunk?.error && (hasRealContent || finishReason)) {
         try { await reader.cancel(); } catch {}
         return {
           rawText,
@@ -2097,8 +2147,6 @@ async function detectModelStatus(provider, modelId, options = {}) {
 async function confirmSwitchWhenModelCheckFailed(ask, modelStatus, retryDetect = null) {
   let currentStatus = modelStatus;
   while (currentStatus?.status !== 'available') {
-    const errText = String(currentStatus?.error || '');
-    const isTimeout = currentStatus?.status === 'timeout' || /超时|timeout/i.test(errText);
     warn(`该模型检测未通过:${formatModelCheckResult(currentStatus)}`);
     if (currentStatus?.status === 'billing_error') {
       warn('检测到 API 余额/额度不足;如果仍然切换,实际调用可能继续失败或回退到其他模型。');
@@ -2266,15 +2314,28 @@ function findProviderDisplayNameConflict(name, cfg = {}, displayNames = {}, opti
 function askFactory() {
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
+  const pending = new Set();
   rl.on('close', () => {
     closed = true;
+    // stdin 在提问过程中关闭(EOF、终端断开、管道输入用完)时,把还挂着的问题按"0"收尾。
+    // 否则那个 promise 永远不会 resolve,脚本就在提示符处静默退出,什么都不说。
+    for (const settle of [...pending]) settle('0');
+    pending.clear();
   });
   const ask = (q) => new Promise((resolve) => {
     if (closed) {
       resolve('0');
       return;
     }
-    rl.question(q, (a) => resolve(String(a ?? '').trim()));
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      pending.delete(settle);
+      resolve(value);
+    };
+    pending.add(settle);
+    rl.question(q, (a) => settle(String(a ?? '').trim()));
   });
   ask.close = () => {
     if (!closed) rl.close();
@@ -2304,42 +2365,8 @@ function runNode(script, args = [], options = {}) {
   return typeof res.status === 'number' ? res.status : 1;
 }
 
-function runNodeBuffered(script, args = [], options = {}) {
-  const label = options.label || path.basename(script || '子脚本');
-  if (script && !fs.existsSync(script)) {
-    return Promise.resolve({ status: 127, output: `缺少辅助脚本:${label}` });
-  }
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, [script, ...args], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk.toString(); });
-    child.stderr.on('data', (chunk) => { output += chunk.toString(); });
-    child.on('error', (err) => resolve({ status: 1, output: err.message }));
-    child.on('close', (code, signal) => resolve({
-      status: typeof code === 'number' ? code : 1,
-      output: output.trim(),
-      signal,
-    }));
-  });
-}
-
 function isValidProviderId(value) {
   return /^[a-zA-Z0-9_-]+$/.test(String(value || ''));
-}
-
-function resolveProviderKey(input, providers, displayNames) {
-  if (!input) return null;
-  if (providers[input]) return input;
-  const lowered = String(input).toLowerCase();
-  for (const key of Object.keys(providers || {})) {
-    if (key.toLowerCase() === lowered) return key;
-  }
-  for (const [key, value] of Object.entries(displayNames || {})) {
-    if (String(value).toLowerCase() === lowered && providers?.[key]) return key;
-  }
-  return null;
 }
 
 function isProviderRef(ref, name) {
@@ -2386,57 +2413,6 @@ function rewriteProviderRefsInDefaults(config, oldName, newName) {
   if (policyAllow) {
     if (!defaults.modelPolicy || typeof defaults.modelPolicy !== 'object') defaults.modelPolicy = {};
     defaults.modelPolicy.allow = policyAllow;
-  }
-}
-
-function pruneModelSelection(config, name) {
-  const defaults = config.agents?.defaults;
-  if (!defaults) return;
-
-  const pruneSelectionField = (fieldName) => {
-    const value = defaults[fieldName];
-    if (typeof value === 'string') {
-      if (isProviderRef(value, name)) delete defaults[fieldName];
-      return;
-    }
-    if (value && typeof value === 'object') {
-      const hadPrimary = !!value.primary;
-      if (isProviderRef(value.primary, name)) delete value.primary;
-      if (Array.isArray(value.fallbacks)) {
-        value.fallbacks = value.fallbacks.filter((ref) => !isProviderRef(ref, name));
-      }
-      if (hadPrimary && !value.primary && Array.isArray(value.fallbacks) && value.fallbacks.length > 0) {
-        value.primary = value.fallbacks[0];
-        value.fallbacks = value.fallbacks.slice(1);
-      }
-      if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
-        delete defaults[fieldName];
-      }
-    }
-  };
-
-  pruneSelectionField('model');
-  pruneSelectionField('imageModel');
-  pruneSelectionField('pdfModel');
-  pruneSelectionField('audioModel');
-  pruneSelectionField('videoGenerationModel');
-  pruneSelectionField('musicGenerationModel');
-  pruneSelectionField('utilityModel');
-  if (defaults.mediaModels !== undefined) {
-    const removeRefs = (value) => {
-      if (typeof value === 'string') return isProviderRef(value, name) ? null : value;
-      if (Array.isArray(value)) return value.map(removeRefs).filter((item) => item !== null);
-      if (!value || typeof value !== 'object') return value;
-      const out = {};
-      for (const [key, item] of Object.entries(value)) {
-        const next = removeRefs(item);
-        if (next !== null) out[key] = next;
-      }
-      return out;
-    };
-    const remaining = removeRefs(defaults.mediaModels);
-    if (remaining && Object.keys(remaining).length) defaults.mediaModels = remaining;
-    else delete defaults.mediaModels;
   }
 }
 
@@ -2600,9 +2576,6 @@ function guessReasoning(id) {
 // 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
 // 成本恒 0 会让用量统计永远是 0。现在改成只写 /models 真给了的值,给不出就不写,
 // 让 OpenClaw 用它自己的默认值。
-const FABRICATED_CONTEXT_WINDOW = 1048576;
-const FABRICATED_MAX_TOKENS = 128000;
-
 function pickFirstPositiveInt(...values) {
   for (const value of values) {
     const num = Number(value);
@@ -2612,30 +2585,29 @@ function pickFirstPositiveInt(...values) {
 }
 
 // 从 /models 原始行里取真实上下文/输出上限;各家字段名不统一,按常见口径挨个试。
+// 不认 snake_case 的 max_tokens:它和请求参数同名,个别服务商在模型目录里回显的是
+// "默认输出长度"(如 4096)而不是上限,当成上限写进去反而会把输出压低。
+// 只认语义明确的 max_output_tokens / max_completion_tokens。
 function extractModelLimits(raw) {
   if (!raw || typeof raw !== 'object') return { contextWindow: null, maxTokens: null };
   const top = raw.top_provider && typeof raw.top_provider === 'object' ? raw.top_provider : {};
   const meta = raw.meta && typeof raw.meta === 'object' ? raw.meta : {};
-  return {
-    contextWindow: pickFirstPositiveInt(
-      raw.context_length, raw.contextWindow, raw.context_window,
-      raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
-      top.context_length, meta.context_length,
-    ),
-    maxTokens: pickFirstPositiveInt(
-      raw.max_output_tokens, raw.maxTokens, raw.max_tokens,
-      raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
-    ),
-  };
+  const contextWindow = pickFirstPositiveInt(
+    raw.context_length, raw.contextWindow, raw.context_window,
+    raw.max_context_length, raw.max_input_tokens, raw.max_context_tokens,
+    top.context_length, meta.context_length,
+  );
+  let maxTokens = pickFirstPositiveInt(
+    raw.max_output_tokens, raw.maxTokens,
+    raw.max_completion_tokens, top.max_completion_tokens, meta.max_output_tokens,
+  );
+  // 输出上限不可能大于上下文窗口;超了说明这个字段不是我们以为的含义,宁可不写。
+  if (maxTokens && contextWindow && maxTokens > contextWindow) maxTokens = null;
+  return { contextWindow, maxTokens };
 }
 
 // pricing 各家口径不一(每 token / 每千 token / 每百万 token,还有字符串和不同币种),
 // 猜错比不写更糟,所以脚本一律不再写 cost。
-function isFabricatedCost(cost) {
-  if (!cost || typeof cost !== 'object') return false;
-  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
-}
-
 function normalizeModel(displayName, id, raw = null) {
   const model = {
     id,
@@ -2650,6 +2622,16 @@ function normalizeModel(displayName, id, raw = null) {
 }
 // ===== ocapi:model-meta 结束 =====
 
+// 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
+const FABRICATED_CONTEXT_WINDOW = 1048576;
+const FABRICATED_MAX_TOKENS = 128000;
+
+// 全零成本同样是脚本编的,不是人工填的;人工填过的真实成本才保留。
+function isFabricatedCost(cost) {
+  if (!cost || typeof cost !== 'object') return false;
+  return ['input', 'output', 'cacheRead', 'cacheWrite'].every((key) => Number(cost[key]) === 0);
+}
+
 // 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
 // 视为手工维护,原样保留。
 const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
@@ -2662,17 +2644,16 @@ function mergeModel(displayName, id, prev, raw = null) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
   }
   const result = { ...fresh, ...preserved };
-  // reasoning 是用户的显式选择(v0.1.5:让服务商下所有模型走思考),旧值优先,没有才按 id 猜,
-  // 避免同步把手工关掉的模型又打开。
+  // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
+  // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
+  // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
   if (typeof prev.reasoning === 'boolean') result.reasoning = prev.reasoning;
-  // 上游没给上限时,保留手工填过的真实值,但丢掉历史上写死的 1M / 128K 占位值。
-  if (result.contextWindow === undefined && prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
+  if (prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
     result.contextWindow = prev.contextWindow;
   }
-  if (result.maxTokens === undefined && prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
+  if (prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
     result.maxTokens = prev.maxTokens;
   }
-  // cost 不由脚本编造;手工填过的非全零成本保留,历史上写死的全零成本丢掉。
   if (prev.cost && !isFabricatedCost(prev.cost)) result.cost = prev.cost;
   return result;
 }
@@ -2772,6 +2753,7 @@ async function chooseProvider(ask, prompt = '选择提供商编号: ', title = '
   const rows = providersState();
   if (!rows.length) {
     warn('当前没有已配置的 API 提供商。');
+    await backPrompt(ask);
     return null;
   }
   const statusMap = new Map();
@@ -2803,6 +2785,7 @@ async function switchDefaultModel(ask) {
   const cfg = readJson(CONFIG, null);
   if (!cfg) {
     danger(`读取配置失败: ${CONFIG}`);
+    await backPrompt(ask);
     return;
   }
 
@@ -3012,10 +2995,18 @@ async function syncAllProviders(ask) {
   }
   if (!rows.length) {
     warn('当前没有已配置的 API 提供商。');
+    await backPrompt(ask);
     return;
   }
   const beforeCfg = readJson(CONFIG, {});
-  let nextCfg; try { nextCfg = JSON.parse(JSON.stringify(beforeCfg)); } catch { warn('序列化配置失败，跳过同步。'); return false; }
+  let nextCfg;
+  try {
+    nextCfg = JSON.parse(JSON.stringify(beforeCfg));
+  } catch {
+    warn('序列化配置失败，跳过同步。');
+    await backPrompt(ask);
+    return;
+  }
   const beforeIdsMap = new Map(rows.map((row) => [row.id, getProviderModelIds(beforeCfg, row.id)]));
   info(`开始同步全部 ${rows.length} 个 API，请稍等...`);
   const patchPayload = { models: { providers: {} }, agents: { defaults: { models: {} } } };
@@ -3127,6 +3118,7 @@ async function syncProvider(ask) {
     const rows = providersState();
     if (!rows.length) {
       warn('当前没有已配置的 API 提供商。');
+      await backPrompt(ask);
       return null;
     }
     const statusMap = new Map();
@@ -3161,7 +3153,6 @@ async function syncProvider(ask) {
     }
     const row = rows[idx - 1];
     const beforeCfg = readJson(CONFIG, {});
-    const beforeCount = Array.isArray(beforeCfg.models?.providers?.[row.id]?.models) ? beforeCfg.models.providers[row.id].models.length : 0;
     const helperPath = path.join(__dirname, 'provider-manage.mjs');
     if (!fs.existsSync(helperPath)) {
       danger('缺少外部脚本:provider-manage.mjs');
@@ -3194,6 +3185,7 @@ async function modifyProvider(ask) {
     const cfg = readJson(CONFIG, null);
     if (!cfg) {
       danger(`读取配置失败: ${CONFIG}`);
+      await backPrompt(ask);
       return;
     }
     const row = await chooseProvider(ask, '选择要修改配置的 API 提供商编号', '修改 API 配置');
@@ -3832,26 +3824,6 @@ function inspectGatewayStatus(options = {}) {
   return value;
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function waitForGatewayReady(options = {}) {
-  const {
-    startMessage = '正在检查 Gateway 状态...',
-    retryMessage = '第 {attempt} 次状态检查尚未拿到结果,正在重试...',
-  } = options;
-  info(startMessage);
-  let inspected = { status: 1, output: '', ok: false, summary: '未获取到状态输出。' };
-  for (let attempt = 1; attempt <= GATEWAY_RESTART_CHECK_MAX_ATTEMPTS; attempt++) {
-    inspected = inspectGatewayStatus({ force: true });
-    if (inspected.ok) break;
-    if (attempt < GATEWAY_RESTART_CHECK_MAX_ATTEMPTS) {
-      info(retryMessage.replace('{attempt}', String(attempt)));
-      await sleep(GATEWAY_RESTART_CHECK_INTERVAL_MS);
-    }
-  }
-  return inspected;
-}
-
 // macOS 的 Gateway 是 launchd 服务,没有 journalctl:标准输出落在 launchd plist 的
 // StandardOutPath 里(默认 ~/Library/Logs/openclaw/gateway.log)。
 function getGatewayLogCandidates() {
@@ -4142,16 +4114,6 @@ function compareReleaseVersions(a, b) {
   return 0;
 }
 
-function getConfigWrittenVersion() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
-    const value = raw?.meta?.writtenByVersion || raw?.meta?.configWrittenByVersion || raw?.meta?.lastWrittenByVersion || '';
-    return extractOpenClawVersion(value, String(value || '').trim());
-  } catch {
-    return '';
-  }
-}
-
 function runDestructiveOpenClaw(args, options = {}) {
   return runCommand('openclaw', args, { ...options, env: { ...process.env, OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: '1' } });
 }
@@ -4324,7 +4286,10 @@ function describeDowngradeRecoveryHints() {
 // (旧版本只会跑 systemctl,在 macOS 上等于什么都没做,却把 launchd 的 plist 留在原地。)
 function cleanupGatewayService() {
   const result = { ok: true, steps: [] };
-  const isMissingUnitOutput = (output) => /not loaded|not-found|could not be found|does not exist|no such file|not installed/i.test(String(output || ''));
+  // launchctl 对已经不存在的服务报的是 "Boot-out failed: 3: No such process",
+  // systemctl 则是 "not loaded" 之类 —— 两边的措辞都要认,否则一次成功的卸载
+  // 会因为"没东西可清理"而被显示成失败。
+  const isMissingUnitOutput = (output) => /not loaded|not-found|could not be found|does not exist|no such (file|process)|boot-out failed|not installed/i.test(String(output || ''));
   const pushStep = (name, res, options = {}) => {
     const tolerated = Boolean(options.tolerateMissing && !res.ok && isMissingUnitOutput(res.output));
     result.steps.push({ name, ...res, tolerated });
@@ -4341,7 +4306,14 @@ function cleanupGatewayService() {
 
   if (process.platform === 'darwin') {
     const { label, plistPath } = getLaunchdGatewayServicePaths();
-    pushStep('launchctl bootout', runLaunchctl(['bootout', `gui/${process.getuid?.() ?? ''}/${label}`]), { tolerateMissing: true });
+    // 官方 uninstall 正常情况下已经 bootout 并删掉 plist 了。只有确实还有残留才动手,
+    // 否则白跑一次 launchctl,再被它的 "No such process" 把成功的卸载显示成失败。
+    if (!fs.existsSync(plistPath)) {
+      result.steps.push({ name: 'launchd-residue', ok: true, skipped: true, reason: '官方 uninstall 已清理干净,无残留' });
+      return result;
+    }
+    const uid = typeof process.getuid === 'function' ? process.getuid() : '';
+    if (uid !== '') pushStep('launchctl bootout', runLaunchctl(['bootout', `gui/${uid}/${label}`]), { tolerateMissing: true });
     try {
       fs.rmSync(plistPath, { force: true });
       result.steps.push({ name: 'remove-launchd-plist', ok: true, path: plistPath });
@@ -4447,6 +4419,26 @@ async function installSpecificOpenClawVersion(ask) {
   }
   const lines = [];
   if (isDowngrade) {
+    // 数据库 schema 是单向迁移的:新版升上去了,旧版就打不开。这一步不能自动判定,
+    // 只能把现状摆出来让用户自己决定 —— 但至少不会装完才发现 Gateway 起不来。
+    const schema = collectStateSchemaVersions();
+    if (schema.ok && schema.rows.length) {
+      warn('降级前请注意:本地数据库已被当前版本迁移过。');
+      for (const row of schema.rows.slice(0, 5)) {
+        info(`  ${row.path}  schema 版本 ${row.version}`);
+      }
+      warn('旧版 OpenClaw 打开更高 schema 的库会直接拒绝启动(uses newer schema version)。');
+      info('若目标版本不支持这些 schema,降级后 Gateway 会起不来,需要用备份恢复数据目录。');
+      info('强烈建议先执行 [16] 备份 OpenClaw 配置,再继续。');
+    } else if (!schema.ok) {
+      warn(`无法读取数据库 schema 版本(${schema.reason}),降级风险未知,建议先备份。`);
+    }
+    const schemaConfirm = await ask(color('已了解降级可能导致数据库不兼容,继续？(y/N): ', C.red, C.bold));
+    if (schemaConfirm.toLowerCase() !== 'y') {
+      info('已取消降级。建议先执行 [16] 备份,或改用 [13] 升级到最新版。');
+      await backPrompt(ask);
+      return;
+    }
     info('检测到是降级操作,先停止 Gateway 以避免旧版本 binary 直接接管新配置。');
     const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
     if (stopRes.status === 0) {
@@ -4518,27 +4510,169 @@ async function installSpecificOpenClawVersion(ask) {
   } else {
     lines.push(color('Gateway 启动/重启失败,请手动检查服务状态。', C.red, C.bold));
     if (shouldUseRecovery) {
+      // 降级后起不来,最常见的原因就是数据库 schema 比旧版新。先把这个可能性点明,
+      // 否则用户只会看到一句"启动失败",完全不知道该往哪查。
+      const rejection = findSchemaRejectionInLogs();
+      if (rejection) {
+        lines.push(color(`日志显示是数据库 schema 不兼容:${rejection}`, C.red, C.bold));
+        lines.push(color('目标旧版打不开被新版迁移过的库。恢复办法二选一:', C.white));
+        lines.push(color('  1) 用 [16] 生成的备份恢复整个 ~/.openclaw 数据目录,再重试降级;', C.white));
+        lines.push(color('  2) 装回原来的新版本,数据即可正常打开。', C.white));
+      }
       for (const hint of describeDowngradeRecoveryHints()) lines.push(color(hint, C.white));
     }
   }
   await finishScreen(ask, lines);
 }
 
+// 降级前的安全检查:OpenClaw 各 sqlite 库带 user_version,新版会往上迁移。
+// 旧版 binary 打开更高版本的库会直接抛 "uses newer schema version N" 并拒绝启动。
+// 我们无法预先知道目标旧版支持到几(得装了才知道),所以只做两件事:
+// 把现状摆出来让用户知情,以及在降级失败时能精准指认原因。
+function collectStateSchemaVersions() {
+  const sqliteBin = '/usr/bin/sqlite3';
+  const probe = runCommand(sqliteBin, ['-version'], { timeout: 8000 });
+  if (probe.error || probe.status !== 0) return { ok: false, reason: '未找到 sqlite3 命令', rows: [] };
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.sqlite') && !entry.name.includes('.lock.')) files.push(full);
+    }
+  };
+  walk(STATE_DIR);
+  const rows = [];
+  for (const file of files) {
+    const res = runCommand(sqliteBin, [file, 'pragma user_version;'], { timeout: 15000 });
+    const version = Number(String(res.stdout || '').trim());
+    if (Number.isFinite(version) && version > 0) rows.push({ path: path.relative(STATE_DIR, file), version });
+  }
+  rows.sort((a, b) => b.version - a.version);
+  return { ok: true, rows };
+}
+
+// 降级失败时,从日志里找 schema 拒绝的证据,把"起不来"翻译成可操作的原因。
+function findSchemaRejectionInLogs() {
+  const logs = inspectGatewayLogs(200);
+  const match = String(logs || '').match(/uses newer schema version (\d+)/i);
+  return match ? match[0] : '';
+}
+
+// Gateway 运行时直接 tar 会把写到一半的 sqlite(以及 -wal)拷进去,恢复出来可能是坏库。
+// 这里用 sqlite3 的 .backup 对每个库取一致性快照,归档时排除活库、改放快照。
+// 快照目录放在 STATE_DIR 之外,避免被自己打包进去。
+function snapshotSqliteDatabases(stagingDir) {
+  const result = { ok: true, count: 0, degraded: [], failed: [], skipped: false, reason: '' };
+  const sqliteBin = '/usr/bin/sqlite3';
+  const probe = runCommand(sqliteBin, ['-version'], { timeout: 8000 });
+  if (probe.error || probe.status !== 0) {
+    result.skipped = true;
+    result.reason = '未找到可用的 sqlite3 命令';
+    return result;
+  }
+  const files = [];
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith('.sqlite')) files.push(full);
+    }
+  };
+  walk(STATE_DIR);
+  if (!files.length) {
+    result.skipped = true;
+    result.reason = '未发现 sqlite 数据库';
+    return result;
+  }
+  for (const file of files) {
+    const rel = path.relative(STATE_DIR, file);
+    const dest = path.join(stagingDir, rel);
+    try { fs.mkdirSync(path.dirname(dest), { recursive: true }); } catch {}
+    const res = runCommand(sqliteBin, [file, `.backup '${dest.replace(/'/g, "''")}'`], { timeout: 120000 });
+    if (res.status === 0 && fs.existsSync(dest)) {
+      try { fs.chmodSync(dest, 0o600); } catch {}
+      result.count += 1;
+      continue;
+    }
+    // .backup 失败(锁库、被独占等):退回直接复制,至少不丢文件,但标记为不保证一致。
+    try {
+      fs.copyFileSync(file, dest);
+      fs.chmodSync(dest, 0o600);
+      result.count += 1;
+      result.degraded.push(rel);
+    } catch (err) {
+      result.ok = false;
+      result.failed.push(`${rel}(${err.message})`);
+    }
+  }
+  return result;
+}
+
 async function backupOpenClaw(ask) {
   section('备份 OpenClaw 配置');
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const output = path.join(os.homedir(), `openclaw-backup-${ts}.tar.gz`);
+  const stagingDir = path.join(os.tmpdir(), `openclaw-backup-snapshot-${process.pid}-${Date.now()}`);
   info('正在备份配置，请稍等...');
+
+  let snapshot = { skipped: true, reason: '快照目录创建失败', count: 0, degraded: [], failed: [], ok: false };
+  try {
+    fs.mkdirSync(stagingDir, { recursive: true, mode: 0o700 });
+    info('正在为运行中的数据库创建一致性快照...');
+    snapshot = snapshotSqliteDatabases(stagingDir);
+  } catch (err) {
+    snapshot = { skipped: true, reason: err.message, count: 0, degraded: [], failed: [], ok: false };
+  }
+  const useSnapshot = !snapshot.skipped && snapshot.count > 0;
+  if (snapshot.skipped) warn(`未能创建数据库快照(${snapshot.reason}),将直接打包;若 Gateway 正在运行,库文件可能不一致。`);
+
   // 备份里含全部 provider API Key、Telegram Bot Token、Gateway Token。
-  // 先按 600 建好空文件,tar 会写入这个已存在的文件而不改权限,避免"先 644 落盘再 chmod"的空窗。
-  try { fs.writeFileSync(output, '', { mode: 0o600 }); } catch {}
-  const res = spawnSync('tar', ['-czf', output, '-C', STATE_DIR, '.'], { stdio: 'inherit' });
+  // 先按 600 建好空文件,tar 写入已存在的文件不会改权限,避免"先 644 落盘再 chmod"的空窗。
+  // 中间文件名必须和 output 明确区分。曾经叫 openclaw-backup-TS.tar,而 gzip 产出的
+  // openclaw-backup-TS.tar.gz 恰好就是 output 本身,收尾清理会把刚做好的备份一起删掉。
+  const tarPath = useSnapshot ? path.join(os.homedir(), `.openclaw-backup-${ts}.building.tar`) : output;
+  const gzPath = `${tarPath}.gz`;
+  try { fs.writeFileSync(tarPath, '', { mode: 0o600 }); } catch {}
+
+  let res;
+  if (useSnapshot) {
+    // 注意:tar 的 --exclude 是全局生效的,一次调用里追加快照会被同一条规则排除掉。
+    // 所以分两步:先打包(排除活库),再追加快照,最后压缩。
+    res = spawnSync('tar', [
+      '-cf', tarPath, '-C', STATE_DIR,
+      '--exclude=*.sqlite', '--exclude=*.sqlite-wal', '--exclude=*.sqlite-shm',
+      '.',
+    ], { stdio: 'inherit' });
+    if (res.status === 0) res = spawnSync('tar', ['-rf', tarPath, '-C', stagingDir, '.'], { stdio: 'inherit' });
+    if (res.status === 0) {
+      res = spawnSync('gzip', ['-f', tarPath], { stdio: 'inherit' });
+      if (res.status === 0) {
+        try { fs.renameSync(gzPath, output); } catch (err) { res = { status: 1, error: err }; }
+      }
+    }
+    // 只清理中间产物。成品已经改名成 output,这里绝不能再按中间名去删。
+    try { fs.rmSync(tarPath, { force: true }); } catch {}
+    if (res.status !== 0) { try { fs.rmSync(gzPath, { force: true }); } catch {} }
+  } else {
+    res = spawnSync('tar', ['-czf', output, '-C', STATE_DIR, '.'], { stdio: 'inherit' });
+  }
+  try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+
   if (res.status === 0) {
     try { fs.chmodSync(output, 0o600); } catch {}
     success('OpenClaw 配置备份成功。');
     info(`备份文件:${output}`);
+    if (useSnapshot) info(`已为 ${snapshot.count} 个数据库写入一致性快照,备份期间无需停止 Gateway。`);
+    for (const item of snapshot.degraded) warn(`${item}:快照失败,已改为直接复制,该库不保证一致。`);
+    for (const item of snapshot.failed) danger(`${item}:未能纳入备份。`);
     info('该文件含明文密钥,权限已设为 600,请勿随意分享或上传。');
   } else {
+    try { fs.rmSync(output, { force: true }); } catch {}
     danger('OpenClaw 配置备份失败,请检查磁盘空间或权限。');
   }
   await backPrompt(ask);
@@ -4712,7 +4846,13 @@ async function showScriptVersionDetail(ask) {
 async function installSkill(ask) {
   renderScreenTitle('安装技能');
   const skillsDir = getWorkspaceSkillsDir();
-  fs.mkdirSync(skillsDir, { recursive: true });
+  try {
+    fs.mkdirSync(skillsDir, { recursive: true });
+  } catch (err) {
+    danger(`无法创建技能目录:${err.message}`);
+    await backPrompt(ask);
+    return;
+  }
   const sourceInput = await ask(color('请输入技能目录路径: ', C.bold));
   if (!sourceInput) {
     info('未输入路径,已取消。');
@@ -4756,7 +4896,15 @@ async function installSkill(ask) {
     await backPrompt(ask);
     return;
   }
-  copyDirRecursive(sourcePath, targetPath);
+  try {
+    copyDirRecursive(sourcePath, targetPath);
+  } catch (err) {
+    // 复制到一半失败会留下半个技能目录,清掉再报错,别让下次安装撞上"同名技能已存在"。
+    try { fs.rmSync(targetPath, { recursive: true, force: true }); } catch {}
+    danger(`技能安装失败:${err.message}`);
+    await backPrompt(ask);
+    return;
+  }
   success(`技能安装成功:${skillName}`);
   info(`安装路径:${targetPath}`);
   await backPrompt(ask);
@@ -4788,7 +4936,13 @@ async function removeSkill(ask) {
       info('操作已取消。');
       continue;
     }
-    fs.rmSync(selected.path, { recursive: true, force: true });
+    try {
+      fs.rmSync(selected.path, { recursive: true, force: true });
+    } catch (err) {
+      danger(`技能删除失败:${err.message}`);
+      await backPrompt(ask);
+      return;
+    }
     success(`已删除技能:${selected.name}`);
     await backPrompt(ask);
     return;
@@ -4818,7 +4972,6 @@ async function manageSkills(ask) {
 }
 
 async function printMainMenu() {
-  const currentMenuInfo = getCurrentMenuVersionInfo();
   const currentMenuVersion = getCurrentMenuDisplayVersion();
   const currentModel = getCurrentDefaultModel();
   const currentVersionFull = getOpenClawVersion();
@@ -4932,29 +5085,38 @@ async function showMenu() {
         success('已退出。');
         break;
       }
-      if (finalChoice === '1') await switchDefaultModel(ask);
-      else if (finalChoice === '2') await addProvider(ask);
-      else if (finalChoice === '3') await removeProvider(ask);
-      else if (finalChoice === '4') await syncProvider(ask);
-      else if (finalChoice === '5') await modifyProvider(ask);
-      else if (finalChoice === '6') await showProvidersDetail(ask);
-      else if (finalChoice === '7') await searchModelsGlobally(ask);
-      else if (finalChoice === '8') await quickSwitchFavorite(ask);
-      else if (finalChoice === '9') await manageSkills(ask);
-      else if (finalChoice === '10') await installOpenClaw(ask);
-      else if (finalChoice === '11') await startOpenClaw(ask);
-      else if (finalChoice === '12') await stopOpenClaw(ask);
-      else if (finalChoice === '13') await upgradeOpenClaw(ask);
-      else if (finalChoice === '14') await installSpecificOpenClawVersion(ask);
-      else if (finalChoice === '15') await restartGateway(ask);
-      else if (finalChoice === '16') await backupOpenClaw(ask);
-      else if (finalChoice === '17') await uninstallOpenClaw(ask);
-      else if (finalChoice === '18') await purgeOpenClaw(ask);
-      else if (finalChoice === '19') await diagnoseGatewayQuick(ask);
-      else if (finalChoice === '20') await showScriptVersionDetail(ask);
-      else if (finalChoice === '21') await repairHelperScripts(ask);
-      else if (finalChoice === '22') await quickHealthcheck(ask);
-      else warn('无效选择,请重新输入。');
+      // 单个功能里的意外异常不该掀翻整个菜单:报出来,然后回到主菜单继续。
+      try {
+        if (finalChoice === '1') await switchDefaultModel(ask);
+        else if (finalChoice === '2') await addProvider(ask);
+        else if (finalChoice === '3') await removeProvider(ask);
+        else if (finalChoice === '4') await syncProvider(ask);
+        else if (finalChoice === '5') await modifyProvider(ask);
+        else if (finalChoice === '6') await showProvidersDetail(ask);
+        else if (finalChoice === '7') await searchModelsGlobally(ask);
+        else if (finalChoice === '8') await quickSwitchFavorite(ask);
+        else if (finalChoice === '9') await manageSkills(ask);
+        else if (finalChoice === '10') await installOpenClaw(ask);
+        else if (finalChoice === '11') await startOpenClaw(ask);
+        else if (finalChoice === '12') await stopOpenClaw(ask);
+        else if (finalChoice === '13') await upgradeOpenClaw(ask);
+        else if (finalChoice === '14') await installSpecificOpenClawVersion(ask);
+        else if (finalChoice === '15') await restartGateway(ask);
+        else if (finalChoice === '16') await backupOpenClaw(ask);
+        else if (finalChoice === '17') await uninstallOpenClaw(ask);
+        else if (finalChoice === '18') await purgeOpenClaw(ask);
+        else if (finalChoice === '19') await diagnoseGatewayQuick(ask);
+        else if (finalChoice === '20') await showScriptVersionDetail(ask);
+        else if (finalChoice === '21') await repairHelperScripts(ask);
+        else if (finalChoice === '22') await quickHealthcheck(ask);
+        else warn('无效选择,请重新输入。');
+      } catch (err) {
+        danger(`该功能执行出错:${err?.message || err}`);
+        info('已返回主菜单,其余功能不受影响。');
+        if (process.env.OCAPI_DEBUG) console.error(err?.stack || err);
+        info('设置 OCAPI_DEBUG=1 重新运行可看到完整堆栈。');
+        await backPrompt(ask);
+      }
     }
   } finally {
     ask.close();
