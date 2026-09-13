@@ -50,7 +50,7 @@ if (!baseUrl) {
 const modelsUrl = (() => {
   const u = new URL(baseUrl);
   const cleanPath = u.pathname.replace(/\/+$/, '');
-  return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+  return `${u.origin}${cleanPath}/models`;
 })();
 
 if (!fs.existsSync(CONFIG)) {
@@ -326,11 +326,10 @@ try {
     },
     signal: controller.signal,
   });
-  clearTimeout(timeoutId);
 } catch (err) {
   clearTimeout(timeoutId);
   console.error(`Failed to connect to ${modelsUrl}`);
-  if (err.name === 'AbortError') {
+  if (err.name === 'AbortError' || err.name === 'TimeoutError') {
     console.error(`请求超时:${FETCH_TIMEOUT_MS}ms，请检查网关或 Base URL。`);
   } else if (err.cause?.code === 'ENOTFOUND') {
     console.error(`域名解析失败: ${err.cause.hostname}`);
@@ -343,15 +342,32 @@ try {
   process.exit(2);
 }
 
-if (!res.ok) {
-  const text = await res.text().catch(() => '');
-  console.error(`Failed to fetch models from ${modelsUrl}: HTTP ${res.status}`);
-  if (text) console.error(text.slice(0, 1000));
-  process.exit(2);
-}
-
 let data;
-try { data = await res.json(); } catch { console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)'); process.exit(2); }
+try {
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`Failed to fetch models from ${modelsUrl}: HTTP ${res.status}`);
+    if (text) console.error(text.slice(0, 1000));
+    process.exit(2);
+  }
+  try {
+    data = await res.json();
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+    console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)');
+    process.exit(2);
+  }
+} catch (err) {
+  clearTimeout(timeoutId);
+  if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+    console.error(`请求超时:${FETCH_TIMEOUT_MS}ms，请检查网关或 Base URL。`);
+  } else {
+    console.error(err?.message || '读取 /models 响应失败');
+  }
+  process.exit(2);
+} finally {
+  clearTimeout(timeoutId);
+}
 const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 const ids = [...new Set(rows.map(x => x?.id).filter(Boolean))];
 if (!ids.length) {

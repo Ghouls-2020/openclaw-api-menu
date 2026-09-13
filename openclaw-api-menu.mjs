@@ -62,6 +62,16 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.12',
+    updatedAt: '2026-09-13',
+    summary: [
+      '修复 SQLite 一致性快照失败时误降级为不完整主库复制。',
+      '统一 Provider Base URL、协议探测、模型同步和实际请求路径,并修复超时与 SSE 错误判断。',
+      '同步/删除 Provider 时保留手工模型能力并清理 defaults、Agent 条目中的失效引用。',
+      '彻底卸载成功后直接退出菜单,不再回到主菜单重建临时文件。',
+    ],
+  },
+  {
     version: 'v0.1.11',
     updatedAt: '2026-09-12',
     summary: [
@@ -1721,7 +1731,7 @@ async function detectProviderStatus(provider, providerId = '') {
         headers: { Authorization: `Bearer ${provider.apiKey}` },
         signal: controller.signal,
       });
-      clearTimeout(timeoutId);
+      const body = await res.text();
       const latency = Date.now() - start;
       const result = {
         online: res.ok,
@@ -1731,6 +1741,7 @@ async function detectProviderStatus(provider, providerId = '') {
         state: res.ok ? 'available' : 'reachable_error',
         error: res.ok ? null : formatHttpStatusError(res.status),
       };
+      clearTimeout(timeoutId);
       providerStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return { ...result, _cached: false };
     } catch (err) {
@@ -1740,7 +1751,7 @@ async function detectProviderStatus(provider, providerId = '') {
         reachable: false,
         latency: null,
         state: 'offline',
-        error: err.name === 'AbortError' ? '超时' : err.message,
+        error: err.name === 'AbortError' || err.name === 'TimeoutError' ? '超时' : err.message,
       };
       providerStatusCache.set(cacheKey, { ts: Date.now(), value: result });
       return { ...result, _cached: false };
@@ -1803,7 +1814,7 @@ function buildOpenAICompatibleEndpoint(baseUrl, endpoint) {
   const cleanBaseUrl = String(baseUrl || '').replace(/\/+$/, '');
   const cleanEndpoint = String(endpoint || '').replace(/^\/+/, '');
   if (!cleanBaseUrl || !cleanEndpoint) return '';
-  return /\/v1$/i.test(cleanBaseUrl) ? `${cleanBaseUrl}/${cleanEndpoint}` : `${cleanBaseUrl}/v1/${cleanEndpoint}`;
+  return `${cleanBaseUrl}/${cleanEndpoint}`;
 }
 
 function buildModelProbePayload(endpoint, modelId, promptText = MODEL_STATUS_DEFAULT_PROMPT) {
@@ -1957,6 +1968,7 @@ async function readChatCompletionProbeStream(res) {
   let content = '';
   let reasoningContent = '';
   let usage = null;
+  let streamError = null;
   let chunkCount = 0;
 
   const handleLine = async (rawLine) => {
@@ -1969,6 +1981,7 @@ async function readChatCompletionProbeStream(res) {
       chunkCount += 1;
       if (!returnedModel && chunk?.model) returnedModel = String(chunk.model);
       if (chunk?.usage) usage = chunk.usage;
+      if (chunk?.error && !streamError) streamError = chunk.error;
       const delta = chunk?.choices?.[0]?.delta;
       if (delta?.content) content += String(delta.content);
       if (delta?.reasoning_content) reasoningContent += String(delta.reasoning_content);
@@ -1978,7 +1991,7 @@ async function readChatCompletionProbeStream(res) {
       const finishReason = chunk?.choices?.[0]?.finish_reason;
       // 纯 role chunk(如 {role:"assistant"})不等同于模型可用,等后续真的有内容/reasoning了再判定。
       // 带 error 的块也不能提前判可用:OpenRouter 这类流中报错会同时给 finish_reason:"error"。
-      if (hasValidChoice && !chunk?.error && (hasRealContent || finishReason)) {
+      if (hasValidChoice && !chunk?.error && !streamError && (hasRealContent || finishReason)) {
         try { await reader.cancel(); } catch {}
         return {
           rawText,
@@ -2016,6 +2029,10 @@ async function readChatCompletionProbeStream(res) {
     buffer += tail;
   }
   if (buffer.trim()) await handleLine(buffer);
+  if (streamError && !content && !reasoningContent) {
+    const message = typeof streamError === 'string' ? streamError : (streamError.message || JSON.stringify(streamError));
+    return { rawText, earlyData: { error: { message }, isStreamAssembled: true, _chunkCount: chunkCount } };
+  }
   return { rawText, earlyData: null };
 }
 
@@ -2093,7 +2110,10 @@ async function detectModelStatus(provider, modelId, options = {}) {
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       let bestFailure = null;
-      for (const endpoint of MODEL_STATUS_FALLBACK_ENDPOINTS) {
+      const configuredModel = Array.isArray(provider.models) ? provider.models.find((model) => model?.id === modelId) : null;
+      const configuredApi = configuredModel?.api || provider.api || 'openai-completions';
+      const endpoints = configuredApi === 'openai-responses' ? ['responses'] : ['chat/completions'];
+      for (const endpoint of endpoints) {
         const probe = await probeModelEndpoint(provider, modelId, endpoint, controller.signal, { promptText });
         if (probe.status === 'available') {
           const result = {
@@ -2406,7 +2426,8 @@ function rewriteProviderRefsInDefaults(config, oldName, newName) {
   rewriteSelectionField('videoGenerationModel');
   rewriteSelectionField('musicGenerationModel');
   rewriteSelectionField('utilityModel');
-  for (const field of ['mediaModels']) {
+  rewriteSelectionField('voiceModel');
+  for (const field of ['mediaModels', 'heartbeat', 'subagents']) {
     if (defaults[field] !== undefined) defaults[field] = rewriteProviderRefsDeep(defaults[field], oldName, newName);
   }
   const policyAllow = rewriteProviderModelPolicy(defaults, oldName, newName);
@@ -2418,7 +2439,7 @@ function rewriteProviderRefsInDefaults(config, oldName, newName) {
 
 function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel', 'mediaModels', 'heartbeat', 'subagents']) {
     if (Object.prototype.hasOwnProperty.call(defaults, field)) {
       patch[field] = defaults[field];
     } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
@@ -2481,9 +2502,31 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel']) {
     repairString(field);
     repairObject(field);
+  }
+  for (const field of ['heartbeat', 'subagents']) {
+    const holder = defaults[field];
+    if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue;
+    const current = holder.model;
+    if (typeof current === 'string') {
+      if (isInvalidSyncedRef(current)) {
+        if (fallbackRef) holder.model = fallbackRef; else delete holder.model;
+        changed = true;
+        messages.push(`${field}.model: ${current}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      }
+    } else if (current && typeof current === 'object') {
+      const oldPrimary = current.primary;
+      if (isInvalidSyncedRef(oldPrimary)) {
+        const replacement = firstValidFallback(current.fallbacks) || fallbackRef;
+        if (replacement) current.primary = replacement; else delete current.primary;
+        changed = true;
+        messages.push(`${field}.model.primary: ${oldPrimary}${replacement ? ` -> ${replacement}` : ' 已清理'}`);
+      }
+      if (Array.isArray(current.fallbacks)) current.fallbacks = current.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      if (!current.primary && (!Array.isArray(current.fallbacks) || current.fallbacks.length === 0)) delete holder.model;
+    }
   }
   return { changed, messages, _nextDefaults: defaults };
 }
@@ -2634,7 +2677,7 @@ function isFabricatedCost(cost) {
 
 // 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
 // 视为手工维护,原样保留。
-const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
+const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
 
 function mergeModel(displayName, id, prev, raw = null) {
   const fresh = normalizeModel(displayName, id, raw);
@@ -2644,6 +2687,7 @@ function mergeModel(displayName, id, prev, raw = null) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
   }
   const result = { ...fresh, ...preserved };
+  if (Array.isArray(prev.input) && prev.input.length > 0) result.input = [...prev.input];
   // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
   // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
   // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
@@ -2880,7 +2924,7 @@ function buildModelsListUrl(baseUrl) {
   try {
     const u = new URL(String(baseUrl || ''));
     const cleanPath = u.pathname.replace(/\/+$/, '');
-    return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+    return `${u.origin}${cleanPath}/models`;
   } catch {
     return '';
   }
@@ -4599,16 +4643,10 @@ function snapshotSqliteDatabases(stagingDir) {
       result.count += 1;
       continue;
     }
-    // .backup 失败(锁库、被独占等):退回直接复制,至少不丢文件,但标记为不保证一致。
-    try {
-      fs.copyFileSync(file, dest);
-      fs.chmodSync(dest, 0o600);
-      result.count += 1;
-      result.degraded.push(rel);
-    } catch (err) {
-      result.ok = false;
-      result.failed.push(`${rel}(${err.message})`);
-    }
+    // .backup 失败时不能直接复制主库:WAL 中的已提交事务可能因此丢失。
+    result.ok = false;
+    const detail = String(res.stderr || res.stdout || res.error?.message || 'SQLite 一致性快照失败').trim();
+    result.failed.push(`${rel}(${detail || 'SQLite 一致性快照失败'})`);
   }
   return result;
 }
@@ -4627,6 +4665,13 @@ async function backupOpenClaw(ask) {
     snapshot = snapshotSqliteDatabases(stagingDir);
   } catch (err) {
     snapshot = { skipped: true, reason: err.message, count: 0, degraded: [], failed: [], ok: false };
+  }
+  if (snapshot.failed.length > 0) {
+    for (const item of snapshot.failed) danger(`${item}:未能创建一致性快照,本次备份已中止。`);
+    try { fs.rmSync(stagingDir, { recursive: true, force: true }); } catch {}
+    danger('数据库一致性快照失败,为避免生成不完整备份,本次备份未继续。');
+    await backPrompt(ask);
+    return;
   }
   const useSnapshot = !snapshot.skipped && snapshot.count > 0;
   if (snapshot.skipped) warn(`未能创建数据库快照(${snapshot.reason}),将直接打包;若 Gateway 正在运行,库文件可能不一致。`);
@@ -4754,7 +4799,7 @@ async function purgeOpenClaw(ask) {
     if (shortcutCleanup.removed > 0) info('已从 shell 配置中移除失效的 ocapi 快捷命令。');
     success('OpenClaw 已彻底卸载。');
     info('程序、本地配置、数据和 Gateway 服务残留均已处理。');
-    await backPrompt(ask);
+    info('菜单即将退出。');
     return;
   }
   // 卸载失败(或程序仍存在):不再自动删配置,改为询问用户。

@@ -207,7 +207,7 @@ function getPrimaryRef(value) {
 
 function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   const patch = {};
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'mediaModels']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel', 'mediaModels', 'heartbeat', 'subagents']) {
     if (Object.prototype.hasOwnProperty.call(defaults, field)) {
       patch[field] = defaults[field];
     } else if (previousDefaults && Object.prototype.hasOwnProperty.call(previousDefaults, field)) {
@@ -297,9 +297,36 @@ function repairModelSelectionForSyncedProvider(config, providerName, validModelI
     }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel']) {
+  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel']) {
     repairString(field);
     repairObject(field);
+  }
+  for (const field of ['heartbeat', 'subagents']) {
+    const holder = defaults[field];
+    if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue;
+    const current = holder.model;
+    if (typeof current === 'string') {
+      if (isInvalidSyncedRef(current)) {
+        if (fallbackRef) holder.model = fallbackRef;
+        else delete holder.model;
+        changed = true;
+        messages.push(`${field}.model: ${current}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
+      }
+    } else if (current && typeof current === 'object') {
+      const oldPrimary = current.primary;
+      if (isInvalidSyncedRef(oldPrimary)) {
+        const replacement = firstValidFallback(current.fallbacks) || fallbackRef;
+        if (replacement) current.primary = replacement; else delete current.primary;
+        changed = true;
+        messages.push(`${field}.model.primary: ${oldPrimary}${replacement ? ` -> ${replacement}` : ' 已清理'}`);
+      }
+      if (Array.isArray(current.fallbacks)) {
+        const before = current.fallbacks.length;
+        current.fallbacks = current.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+        if (current.fallbacks.length !== before) changed = true;
+      }
+      if (!current.primary && (!Array.isArray(current.fallbacks) || current.fallbacks.length === 0)) delete holder.model;
+    }
   }
   return { changed, messages, _nextDefaults: defaults };
 }
@@ -337,6 +364,22 @@ function pruneModelSelection(config, name) {
   pruneSelectionField('videoGenerationModel');
   pruneSelectionField('musicGenerationModel');
   pruneSelectionField('utilityModel');
+  pruneSelectionField('voiceModel');
+  for (const field of ['heartbeat', 'subagents']) {
+    const holder = defaults[field];
+    if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue;
+    const current = holder.model;
+    if (typeof current === 'string' && isProviderRef(current, name)) delete holder.model;
+    else if (current && typeof current === 'object') {
+      if (isProviderRef(current.primary, name)) delete current.primary;
+      if (Array.isArray(current.fallbacks)) current.fallbacks = current.fallbacks.filter((ref) => !isProviderRef(ref, name));
+      if (!current.primary && Array.isArray(current.fallbacks) && current.fallbacks.length > 0) {
+        current.primary = current.fallbacks.shift();
+      }
+      if (!current.primary && (!Array.isArray(current.fallbacks) || current.fallbacks.length === 0)) delete holder.model;
+    }
+    if (Object.keys(holder).length === 0) delete defaults[field];
+  }
   if (defaults.mediaModels !== undefined) {
     const nextMediaModels = rewriteRefsDeep(defaults.mediaModels, name, '', true);
     if (nextMediaModels && Object.keys(nextMediaModels).length) defaults.mediaModels = nextMediaModels;
@@ -417,7 +460,7 @@ function isFabricatedCost(cost) {
 
 // 同步时由脚本重建的字段;其余字段(params/headers/compat/thinkingLevelMap 等)
 // 视为手工维护,原样保留。
-const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'input', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
+const MANAGED_MODEL_FIELDS = new Set(['id', 'name', 'reasoning', 'cost', 'contextWindow', 'maxTokens']);
 
 function mergeModel(displayName, id, prev, raw = null) {
   const fresh = normalizeModel(displayName, id, raw);
@@ -427,6 +470,7 @@ function mergeModel(displayName, id, prev, raw = null) {
     if (!MANAGED_MODEL_FIELDS.has(key)) preserved[key] = value;
   }
   const result = { ...fresh, ...preserved };
+  if (Array.isArray(prev.input) && prev.input.length > 0) result.input = [...prev.input];
   // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
   // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
   // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
@@ -586,6 +630,8 @@ if (action === 'remove') {
   };
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   const agentEntriesPatch = buildAgentEntriesPatch(cfg.agents?.entries, providerName, '', true);
+  const agentEntryReplacePaths = [];
+  for (const agentId of Object.keys(agentEntriesPatch)) agentEntryReplacePaths.push('--replace-path', `agents.entries[${JSON.stringify(agentId)}]`);
   const agentsPatch = { defaults: defaultsPatch };
   if (Object.keys(agentEntriesPatch).length) agentsPatch.entries = agentEntriesPatch;
   console.error('正在写入配置，请稍等...');
@@ -596,7 +642,7 @@ if (action === 'remove') {
       },
     },
     agents: agentsPatch,
-  });
+  }, agentEntryReplacePaths);
   if (patchRes.status !== 0) {
     printConfigPatchFailure(patchRes);
     process.exit(patchRes.status || 4);
@@ -662,7 +708,9 @@ if (action === 'sync') {
     if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
     const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: defaultsPatch } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
-    const patchRes = runConfigPatch(patch, ['--replace-path', `models.providers.${providerName}.models`]);
+    const replacePaths = ['--replace-path', `models.providers.${providerName}.models`];
+    for (const agentId of Object.keys(repairedEntries)) replacePaths.push('--replace-path', `agents.entries[${JSON.stringify(agentId)}]`);
+    const patchRes = runConfigPatch(patch, replacePaths);
     if (patchRes.status !== 0) { printConfigPatchFailure(patchRes); process.exit(patchRes.status || 4); }
     console.log(`Synced provider: ${providerName}`);
     console.log(`Models now present: ${ids.length}`);
@@ -673,7 +721,7 @@ if (action === 'sync') {
   const modelsUrl = (() => {
     const u = new URL(baseUrl);
     const cleanPath = u.pathname.replace(/\/+$/, '');
-    return /\/v1$/.test(cleanPath) ? `${u.origin}${cleanPath}/models` : `${u.origin}${cleanPath}/v1/models`;
+    return `${u.origin}${cleanPath}/models`;
   })();
   let res;
   const controller = new AbortController();
@@ -686,11 +734,10 @@ if (action === 'sync') {
       },
       signal: controller.signal,
     });
-    clearTimeout(timeoutId);
   } catch (err) {
     clearTimeout(timeoutId);
     console.error(`Failed to connect to ${modelsUrl}`);
-    if (err.name === 'AbortError') {
+    if (err.name === 'AbortError' || err.name === 'TimeoutError') {
       console.error(`请求超时:${FETCH_TIMEOUT_MS}ms，请检查网关或 Base URL。`);
     } else if (err.cause?.code === 'ENOTFOUND') {
       console.error(`域名解析失败: ${err.cause.hostname}`);
@@ -702,14 +749,31 @@ if (action === 'sync') {
     }
     process.exit(4);
   }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    console.error(`Failed to fetch models from ${modelsUrl}: HTTP ${res.status}`);
-    if (text) console.error(text.slice(0, 1000));
-    process.exit(4);
-  }
   let data;
-  try { data = await res.json(); } catch { console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)'); process.exit(4); }
+  try {
+    if (!res.ok) {
+      const text = await res.text();
+      console.error(`Failed to fetch models from ${modelsUrl}: HTTP ${res.status}`);
+      if (text) console.error(text.slice(0, 1000));
+      process.exit(4);
+    }
+    try {
+      data = await res.json();
+    } catch (err) {
+      if (err?.name === 'AbortError' || err?.name === 'TimeoutError') throw err;
+      console.error('Failed to parse /models response as JSON (可能被网关返回了 HTML 错误页)');
+      process.exit(4);
+    }
+  } catch (err) {
+    if (err?.name === 'AbortError' || err?.name === 'TimeoutError') {
+      console.error(`请求超时:${FETCH_TIMEOUT_MS}ms，请检查网关或 Base URL。`);
+    } else {
+      console.error(err?.message || '读取 /models 响应失败');
+    }
+    process.exit(4);
+  } finally {
+    clearTimeout(timeoutId);
+  }
   const rows = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
   const ids = [...new Set(rows.map(x => x?.id).filter(Boolean))];
   if (!ids.length) {
@@ -749,7 +813,11 @@ if (action === 'sync') {
       defaults: defaultsPatch,
       ...(Object.keys(repairedEntries).length ? { entries: repairedEntries } : {}),
     },
-  }, ['--replace-path', `models.providers.${providerName}.models`]);
+  }, (() => {
+    const paths = ['--replace-path', `models.providers.${providerName}.models`];
+    for (const agentId of Object.keys(repairedEntries)) paths.push('--replace-path', `agents.entries[${JSON.stringify(agentId)}]`);
+    return paths;
+  })());
   if (patchRes.status !== 0) {
     printConfigPatchFailure(patchRes);
     process.exit(patchRes.status || 4);
