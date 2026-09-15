@@ -62,6 +62,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.13',
+    updatedAt: '2026-09-15',
+    summary: [
+      '修复 Windows 分支 runCommand 把参数手工拼成字符串交给 cmd 的注入面:安全字符集直通,其余强制双引号并按 cmd 规则转义内层引号,含控制字符的参数直接拒绝。',
+    ],
+  },
+  {
     version: 'v0.1.12',
     updatedAt: '2026-09-13',
     summary: [
@@ -511,13 +518,26 @@ function formatModelDelta(beforeIds, afterIds) {
   return { added, removed };
 }
 
+// Windows 上 npm / openclaw 是 .cmd shim,必须经 shell;但把手工拼的字符串整条交给
+// cmd,就等于让 cmd 重新解释参数:参数里带 & | < > ^ ( ) 会被当成命令分隔或重定向。
+// 这里统一按「安全字符集直通,其余一律强制双引号」处理,内层引号按 cmd 规则写成 "",
+// 并拒绝会截断整条命令的控制字符。
+const WINDOWS_SAFE_ARG = /^[A-Za-z0-9._/\\:@=+,-]+$/u;
+
+function quoteWindowsArg(part) {
+  const s = String(part);
+  if (/[\u0000-\u001f\u007f]/u.test(s)) {
+    throw new Error(`命令参数包含控制字符,已拒绝执行: ${JSON.stringify(s)}`);
+  }
+  if (WINDOWS_SAFE_ARG.test(s)) return s;
+  // 双引号内的 & | < > ^ ( ) 不再被 cmd 解释;%VAR% 仍会展开,那属于文本替换而非命令注入。
+  return `"${s.replace(/"/gu, '""')}"`;
+}
+
 function runCommand(cmd, args = [], options = {}) {
   const baseOptions = { encoding: 'utf8', ...options };
   if (process.platform === 'win32') {
-    const full = [cmd, ...args].map((part) => {
-      const s = String(part);
-      return /[\s"]/u.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s;
-    }).join(' ');
+    const full = [cmd, ...args].map(quoteWindowsArg).join(' ');
     return spawnSync(full, { ...baseOptions, shell: true });
   }
   return spawnSync(cmd, args, baseOptions);
