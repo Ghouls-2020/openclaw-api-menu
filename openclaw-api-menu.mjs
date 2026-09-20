@@ -62,6 +62,14 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.14',
+    updatedAt: '2026-09-20',
+    summary: [
+      '升级 OpenClaw 改用 npm 直装,绕开 openclaw update 必定失败的暂存目录自检:它把新版本解压到 /usr/lib/node_modules/.openclaw.update-stage-*,而自身的包树校验扫的正是该目录,会把自己的暂存目录判定为外部改动并回滚(global-install-failed)。',
+      '升级流程改为与降级一致:停 Gateway → npm install -g → 启动 Gateway;版本检测失败时回退到 openclaw@latest,停/启失败只告警不中断。',
+    ],
+  },
+  {
     version: 'v0.1.13',
     updatedAt: '2026-09-15',
     summary: [
