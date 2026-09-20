@@ -4134,10 +4134,20 @@ async function upgradeOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
-  info('正在执行官方更新流程:openclaw update');
-  const res = runCommand('openclaw', ['update'], { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
-  const combinedUpdateOutput = `${res.stdout || ''}${res.stderr || ''}`;
-  if (combinedUpdateOutput.trim()) console.log(combinedUpdateOutput.trimEnd());
+  // 不走 `openclaw update`:它把新版本解压到 /usr/lib/node_modules/.openclaw.update-stage-*,
+  // 而它自身的包树校验扫的正是 /usr/lib/node_modules,于是把自己的暂存目录当成"外部改动"
+  // 判定为 global-install-failed 并回滚。改用与降级一致的做法:停 Gateway → npm 直装 → 启动。
+  const installTarget = latestVersion && latestVersion !== '未知'
+    ? `openclaw@${latestVersion}`
+    : 'openclaw@latest';
+  info('正在升级:停止 Gateway → npm 安装 → 启动 Gateway');
+  const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+  if (stopRes.status !== 0) warn('Gateway 停止失败,仍继续尝试安装。');
+  info(`正在安装 ${installTarget},请稍等...`);
+  const res = runCommand('npm', ['install', '-g', installTarget], { stdio: 'inherit' });
+  const startRes = runCommand('openclaw', ['gateway', 'start'], { stdio: 'inherit' });
+  if (startRes.status !== 0) warn('Gateway 启动失败,请手动执行 openclaw gateway start 排查。');
+  const combinedUpdateOutput = '';
   const newVersion = getOpenClawVersion();
   if (res.status === 0) {
     const lines = [];
