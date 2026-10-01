@@ -156,13 +156,6 @@ function guessInputCaps(id) {
 }
 
 
-function guessReasoning(id) {
-  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
-  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
-  const s = String(id).toLowerCase();
-  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
-}
-
 // agents.defaults.models 只是元数据/别名覆盖表,不影响模型可用性(可用性由
 // models.providers 与 modelPolicy.allow 决定)。同步不再往里写引用,并清掉本
 // provider 遗留的空对象引用;带实际内容的条目(如 alias)保留。
@@ -220,7 +213,7 @@ function normalizeModel(displayName, id, raw = null) {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
+    reasoning: true, // 用户指定:所有模型统一启用 reasoning,不按名称或上游声明区分。
   };
   const { contextWindow, maxTokens } = extractModelLimits(raw);
   if (contextWindow) model.contextWindow = contextWindow;

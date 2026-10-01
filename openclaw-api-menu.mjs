@@ -62,6 +62,40 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.18',
+    updatedAt: '2026-10-01',
+    summary: [
+      '修复快捷命令写错文件:$SHELL 为空时(cron / systemd / 部分 exec 环境)不再一律当作 zsh 去写 .zshrc,改为回查 /etc/passwd 里当前用户的登录 shell;仍然判断不出时直接跳过并提示手动添加。',
+    ],
+  },
+  {
+    version: 'v0.1.17',
+    updatedAt: '2026-10-01',
+    summary: [
+      '删除 provider 改成分步写入:每步保持配置体积 ≥ 基线 55%,不再触发 OpenClaw 的 size-drop 写入保护;几十个模型的大 provider 也能一次删干净(3-4 步,约 20 秒)。',
+      'runNode 增加 3 分钟超时上限,辅助脚本卡住/网络挂起时不再让菜单无限等待(超时返回 124)。',
+      '卸载残留清理不再直接删除 systemd 服务文件与 drop-in 目录,改为改名保留(.removed-<时间戳>),误触可手动恢复。',
+      '降级直写兜底补齐三道闸:写前自动备份、自带体积保护(新内容 < 原文 50% 拒绝)、含 JSON5 注释时拒绝整份重写。',
+    ],
+  },
+  {
+    version: 'v0.1.16',
+    updatedAt: '2026-09-29',
+    summary: [
+      '按用户指定,所有模型统一设置 reasoning: true;添加、单个同步和批量同步不再按名称排除模型,也不再保留旧配置里的 false。',
+    ],
+  },
+  {
+    version: 'v0.1.15',
+    updatedAt: '2026-09-25',
+    summary: [
+      '修复同步 API 时默认模型被换成 /models 列表第一个模型(可能是嵌入/图像模型,导致对话全部失败):不再自动顶替,只提升同字段里仍有效的 fallback,否则保留原值并提示。',
+      '上游 /models 临时漏掉仍被默认模型/Agent 引用的模型时,同步不再删除它,保留并提示,确认下线后再到 [1] 换模型。',
+      '升级/重装/安装指定版本改为官方手动流程:先停 Gateway → npm 安装(npm 11.16+ 自动加 --allow-scripts=openclaw,npm 12 起不加会跳过 postinstall) → 升级时执行 openclaw doctor --fix(迁移并对齐官方插件) → 启动 Gateway。',
+      '安装指定版本失败时自动按原版本重新启动 Gateway;移除升级结果里永远不会触发的 completion cache 死代码。',
+    ],
+  },
+  {
     version: 'v0.1.14',
     updatedAt: '2026-09-20',
     summary: [
@@ -215,234 +249,6 @@ const MENU_VERSION_HISTORY = [
       'Telegram 会话模型切换通过 Gateway sessions.patch 写入,避免绕过 Gateway 缓存。',
     ],
   },
-  {
-    version: 'v0.0.95',
-    updatedAt: '2026-08-13',
-    summary: [
-      '修复 setDowngradeConfigTouchedVersion 下方残留的旧孤立代码块，导致 node --check 报 Illegal return statement。',
-      '确认 4 项修复已全部到位，无需额外改动：',
-      '必修1: STATE_DIR 统一 (4 脚本均用 process.env.OPENCLAW_STATE_DIR || ~/.openclaw)',
-      '必修2: 降级时不破坏 openclaw.json (优先 CLI patch, 回退定向文本替换 + 保留权限)',
-      '必修3: add-provider 幂等检测 (provider 已存在时视为写入成功)',
-      '必修4: 卸载失败保护 (npm uninstall 失败或程序仍存在时询问用户再删配置)',
-    ],
-  },
-  {
-    version: 'v0.0.94',
-    updatedAt: '2026-08-13',
-    summary: [
-      '确认 4 项修复已全部到位，无需额外改动。',
-    ],
-  },
-  {
-    version: 'v0.0.93',
-    updatedAt: '2026-08-07',
-    summary: [
-      '模型切换使用官方 Gateway 接口,避免覆盖 Gateway 并发会话状态。',
-    ],
-  },
-  {
-    version: 'v0.0.92',
-    updatedAt: '2026-08-07',
-    summary: [
-      '修复 getOpenClawVersionChoices 中 catch bare return 导致菜单崩溃的问题。',
-      '修复 detectModelStatus 失败路径错误将 online 设为 true 导致模型误显在线。',
-      '修复 progressBar total=0 时 NaN 崩溃、C.dim 未定义导致帮助失显、backPrompt 死循环。',
-    ],
-  },
-  {
-    version: 'v0.0.91',
-    updatedAt: '2026-08-07',
-    summary: [
-      '修复 add-provider.mjs 与 provider-manage.mjs 共 4 处 JSON.parse 缺少 try/catch 保护。',
-      'cleanupSystemdUserGatewayService 删除文件失败时增加 warn 提示。',
-    ],
-  },
-  {
-    version: 'v0.0.90',
-    updatedAt: '2026-08-07',
-    summary: [
-      '修复 switchDefaultModel 选择模型后死循环无法退出的问题。',
-      '修复 5 处 JSON.parse 缺少 try/catch 保护的问题。',
-    ],
-  },
-  {
-    version: 'v0.0.89',
-    updatedAt: '2026-08-06',
-    summary: [
-      '移除脚本启动时自动备份主菜单文件的功能。',
-      '脚本版本通过 Git 提交与发布 tag 管理，不再在本地重复生成菜单脚本备份。',
-    ],
-  },
-  {
-    version: 'v0.0.88',
-    updatedAt: '2026-08-05',
-    summary: [
-      '修复 add-provider / list-providers-cn / provider-manage 共 16 个逻辑 bug。',
-      '最严重：provider-manage sync 模型引用 key 拼错导致同步功能实际不工作。',
-      '统一 modelsUrl 拼接规则(不再被 query/fragment 污染)、JSON.parse 加顶层保护、displayNames 加类型校验。',
-    ],
-  },
-  {
-    version: 'v0.0.87',
-    updatedAt: '2026-08-04',
-    summary: [
-      '取消 add-provider.mjs 与 provider-manage.mjs 对 openclaw.json 的自动备份。',
-      '清理主菜单与辅助脚本残留的 --no-backup 兼容参数，统一改为始终直接写配置。',
-    ],
-  },
-  {
-    version: 'v0.0.86',
-    updatedAt: '2026-08-03',
-    summary: [
-      '修复 ensureOcapiShortcut 单引号转义写错会破坏用户 ~/.zshrc 的问题。',
-      '路径含撇号时不再产生不闭合的引号导致 shell 解析中断。',
-    ],
-  },
-  {
-    version: 'v0.0.85',
-    updatedAt: '2026-08-02',
-    summary: [
-      '修复 pruneDisplayNameMap 在配置读取出错时误清空所有中文显示名的问题。',
-      'openclaw.json 损坏/不存在时不再清空 provider-display-names.json。',
-    ],
-  },
-  {
-    version: 'v0.0.84',
-    updatedAt: '2026-08-02',
-    summary: [
-      '优化 Provider 状态缓存时间从 60 秒降至 30 秒。',
-      '用户修复 API Key 后能更快看到最新状态，平衡检测频率和体验。',
-    ],
-  },
-  {
-    version: 'v0.0.83',
-    updatedAt: '2026-08-02',
-    summary: [
-      '恢复仓库根目录的 4 个独立脚本，并保留取消 openclaw.json 自动备份的修改。',
-      '补充 VPS 重装后的 GitHub SSH 发布规则。',
-    ],
-  },
-  {
-    version: 'v0.0.80',
-    updatedAt: '2026-08-02',
-    summary: [
-      '取消菜单修改 openclaw.json 前的自动备份，配置现在直接写入。',
-      '添加、删除、修改、同步 API、切换默认模型及升级 OpenClaw 均不再生成 openclaw.json-* 备份。',
-    ],
-  },
-  {
-    version: 'v0.0.79',
-    updatedAt: '2026-07-25',
-    summary: [
-      '统一 loadWorkspaceState().cfg 的空配置防护，新增 getWorkspaceCfg()。',
-      '换模型/查看状态/常用模型等路径在 openclaw.json 损坏时友好降级，不再直接崩溃。',
-    ],
-  },
-  {
-    version: 'v0.0.78',
-    updatedAt: '2026-06-21',
-    summary: [
-      '修复 provider-manage.mjs 在 provider 找不到时误报“Provider id 非法”的问题。',
-      '现在 resolveProviderKey 返回 null 时先提示“Provider not found”，再对有效 id 做合法性校验。',
-    ],
-  },
-  {
-    version: 'v0.0.77',
-    updatedAt: '2026-06-19',
-    summary: [
-      '修复 openclaw.json 损坏或不存在时 getCurrentDefaultModel 读取 cfg.agents 崩溃的问题。',
-      '现在 cfg 为 null 时会友好返回"配置不可用",避免菜单无法启动。',
-    ],
-  },
-  {
-    version: 'v0.0.76',
-    updatedAt: '2026-06-14',
-    summary: [
-      '添加、删除、修改、同步 API 写入配置前都增加"正在写入配置，请稍等..."提示。',
-      '统一在所有 config patch 调用前显示进度提示,让用户知道脚本仍在工作。',
-    ],
-  },
-  {
-    version: 'v0.0.75',
-    updatedAt: '2026-06-14',
-    summary: [
-      '全部同步模型完成后、写入配置前增加"正在写入配置，请稍等..."提示。',
-      '避免用户误以为脚本卡死，实际是在调用 openclaw config patch 验证并写入配置。',
-    ],
-  },
-  {
-    version: 'v0.0.74',
-    updatedAt: '2026-06-14',
-    summary: [
-      '删除 Provider 时同步支持 fallback 提升逻辑。',
-      'primary 被删后如有剩余 fallback,优先提升第一个 fallback 为新 primary,避免默认模型类字段意外清空。',
-    ],
-  },
-  {
-    version: 'v0.0.73',
-    updatedAt: '2026-06-11',
-    summary: [
-      '同步模型修复失效 primary 时,优先提升现有仍有效的 fallback。',
-      '只有没有可用 fallback 时才使用 /models 返回的第一个模型兜底,避免默认模型意外切到新列表首项。',
-    ],
-  },
-  {
-    version: 'v0.0.72',
-    updatedAt: '2026-06-10',
-    summary: [
-      '修复 npm 最新版本检测失败时可能把 stderr 当成版本号显示的问题。',
-      '只有 npm view 成功且 stdout 是合法版本号时才显示最新版本,否则返回“未知”。',
-    ],
-  },
-  {
-    version: 'v0.0.71',
-    updatedAt: '2026-06-09',
-    summary: [
-      '修复删除 Provider 后默认模型类字段可能残留旧 Provider 引用的问题。',
-      '默认选择字段被清空时现在会显式提交 null patch,确保 openclaw.json 真正删除对应字段。',
-    ],
-  },
-  {
-    version: 'v0.0.70',
-    updatedAt: '2026-06-09',
-    summary: [
-      '删除 API 时如果该 Provider 正被默认主模型使用,主菜单提前阻止删除。',
-      '提示用户先到 [1] 换模型,避免确认删除后才被辅助脚本拒绝。',
-    ],
-  },
-  {
-    version: 'v0.0.69',
-    updatedAt: '2026-06-08',
-    summary: [
-      '清理群聊记录使用官方会话删除接口。',
-      '该操作仍只删除 OpenClaw 本地会话列表记录,不会退出或删除 Telegram 群。',
-    ],
-  },
-  {
-    version: 'v0.0.68',
-    updatedAt: '2026-06-08',
-    summary: [
-      '常用模型菜单隐藏 Provider 异常原因,避免和模型不可用原因重复显示。',
-      '菜单 8 中 Provider 状态保留“在线但异常 | 延迟”,具体失败原因交给后面的模型检测结果显示。',
-    ],
-  },
-  {
-    version: 'v0.0.67',
-    updatedAt: '2026-06-08',
-    summary: [
-      '统一 Provider/API 状态文案为“在线、在线但异常、离线/不可达”。',
-      '菜单 1、菜单 8、API 列表等 Provider 状态不再使用“可用但异常”,避免和模型可用性混淆。',
-    ],
-  },
-  {
-    version: 'v0.0.66',
-    updatedAt: '2026-06-08',
-    summary: [
-      '调整 Provider 连通状态文案,正常连通时显示“在线”而不是“可用”。',
-      '常用模型菜单中 Provider 状态和模型测活结果分开显示,避免“可用 | 可用”混淆。',
-    ],
-  },
 ];
 const providerStatusCache = new Map();
 const menuRuntimeCache = {
@@ -565,16 +371,38 @@ function resolveStableNodePath() {
   return exec;
 }
 
+// 判断该往哪个 shell 配置文件写 alias。
+// $SHELL 在 cron / systemd / 部分 exec 环境下会是空的 —— 这时改查
+// /etc/passwd 里当前用户的登录 shell,而不是一律当成 zsh 写进 .zshrc。
+function resolveLoginShellName() {
+  const fromEnv = path.basename(process.env.SHELL || '').toLowerCase();
+  if (fromEnv) return fromEnv;
+  try {
+    const user = os.userInfo().username;
+    for (const line of fs.readFileSync('/etc/passwd', 'utf8').split('\n')) {
+      const parts = line.split(':');
+      if (parts[0] === user && parts[6]) return path.basename(parts[6]).toLowerCase();
+    }
+  } catch {}
+  return '';
+}
+
 function ensureOcapiShortcut(options = {}) {
   const { verbose = false } = options;
   if (process.platform === 'win32') return { changed: false, skipped: true, reason: 'Windows 暂不自动写入 shell alias' };
   const escapeShellSingle = (value) => String(value).replace(/'/g, "'\\''");
   const aliasLine = `alias ocapi='${escapeShellSingle(resolveStableNodePath())} ${escapeShellSingle(__filename)}'`;
-  const shellName = path.basename(process.env.SHELL || '').toLowerCase();
+  const shellName = resolveLoginShellName();
   // fish 的 alias 语法和配置目录都不一样(~/.config/fish/config.fish),
   // 写进 .zshrc 对它毫无作用 —— 与其偷偷写错文件,不如直接说明。
   if (shellName.includes('fish')) {
     return { changed: false, skipped: true, reason: `fish 请手动添加:alias ocapi "${resolveStableNodePath()} ${__filename}"` };
+  }
+  // 连登录 shell 都判断不出来时,宁可什么都不写,也不要把 alias 塞进一个猜出来的文件里。
+  if (!shellName.includes('bash') && !shellName.includes('zsh')) {
+    const reason = `无法确定登录 shell(${shellName ? `当前为 ${shellName}` : 'SHELL 为空且 /etc/passwd 查不到'}),已跳过;请手动添加:alias ocapi="${resolveStableNodePath()} ${__filename}"`;
+    if (verbose) { warn('已跳过 ocapi 快捷命令。'); info(reason); }
+    return { changed: false, skipped: true, reason };
   }
   const targetName = shellName.includes('bash') ? '.bashrc' : '.zshrc';
   try {
@@ -2393,6 +2221,9 @@ function askFactory() {
 
 // 只有网络/上游类失败值得重试;参数校验、名称冲突、上游返回空列表重试也是同样结果。
 const RETRYABLE_HELPER_EXIT_CODES = new Set([2]);
+// 辅助脚本超时上限:分步删除/批量同步最坏也就 1-2 分钟,给 3 分钟余量;
+// 超时就中止,避免辅助脚本卡住时菜单无限等待。
+const HELPER_TIMEOUT_MS = 180000;
 
 function runNode(script, args = [], options = {}) {
   const retry = options.retry === true;
@@ -2402,13 +2233,23 @@ function runNode(script, args = [], options = {}) {
     info('当前版本会尽量使用主脚本内建能力;如果你刚整理过文件,请确认 scripts 目录完整。');
     return 127;
   }
+  const timeout = Number.isFinite(options.timeout) ? options.timeout : HELPER_TIMEOUT_MS;
   const spawnOptions = options.input === undefined
-    ? { stdio: 'inherit' }
-    : { input: options.input, encoding: 'utf8', stdio: ['pipe', 'inherit', 'inherit'] };
-  let res = spawnSync(process.execPath, [script, ...args], spawnOptions);
+    ? { stdio: 'inherit', timeout }
+    : { input: options.input, encoding: 'utf8', stdio: ['pipe', 'inherit', 'inherit'], timeout };
+  const runOnce = () => spawnSync(process.execPath, [script, ...args], spawnOptions);
+  const hitTimeout = (res) => Boolean(res && res.error && (res.error.code === 'ETIMEDOUT' || res.signal === 'SIGTERM'));
+  const onTimeout = () => {
+    warn(`辅助脚本超时(${Math.round(timeout / 1000)} 秒):${label}`);
+    info('已中止,避免菜单一直卡住;请检查网络或 Base URL 后重试。');
+    return 124;
+  };
+  let res = runOnce();
+  if (hitTimeout(res)) return onTimeout();
   if (retry && RETRYABLE_HELPER_EXIT_CODES.has(res.status)) {
     info('网络请求失败,正在重试...');
-    res = spawnSync(process.execPath, [script, ...args], spawnOptions);
+    res = runOnce();
+    if (hitTimeout(res)) return onTimeout();
   }
   return typeof res.status === 'number' ? res.status : 1;
 }
@@ -2477,86 +2318,116 @@ function buildDefaultSelectionPatch(defaults = {}, previousDefaults = null) {
   return patch;
 }
 
+const MODEL_SELECTION_FIELDS = ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel'];
+
+// 同步后只做两件安全的修复:失效的 primary 换成同字段里仍有效的 fallback、清掉失效的 fallback。
+// 以前找不到 fallback 时会拿 /models 列表第一个模型顶上,那可能是嵌入/图像模型,
+// 默认模型会直接变成不能聊天的模型;现在原值保留,只给出警告,由用户自己换。
 function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
   const defaults = config.agents?.defaults;
-  if (!defaults) return { changed: false, messages: [] };
-  const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
-  const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
+  if (!defaults) return { changed: false, messages: [], warnings: [] };
+  const validIds = new Set(validModelIds);
   const messages = [];
+  const warnings = [];
   let changed = false;
 
   const isSameProviderRef = (ref) => typeof ref === 'string' && splitModelRef(ref)[0]?.toLowerCase() === providerName.toLowerCase();
-  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validRefs.has(ref);
-  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
-  const firstValidFallback = (fallbacks = []) => Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '';
-
-  const repairString = (fieldName) => {
-    const value = defaults[fieldName];
-    if (!isInvalidSyncedRef(value)) return;
-    if (fallbackRef) {
-      defaults[fieldName] = fallbackRef;
-      messages.push(`${fieldName}: ${value} -> ${fallbackRef}`);
-    } else {
-      delete defaults[fieldName];
-      messages.push(`${fieldName}: 已清理失效引用 ${value}`);
-    }
-    changed = true;
+  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validIds.has(splitModelRef(ref)[1]);
+  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validIds.has(splitModelRef(ref)[1]);
+  const firstValidFallback = (fallbacks = []) => (Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '') || '';
+  const keepWithWarning = (label, ref) => {
+    warnings.push(`${label}: ${ref} 不在上游模型列表中,已保留原值;如该模型确已下线,请到 [1] 换模型手动切换。`);
   };
 
-  const repairObject = (fieldName) => {
-    const value = defaults[fieldName];
-    if (!value || typeof value !== 'object') return;
+  const repairSelectionObject = (label, value) => {
     let promotedFallback = '';
     if (isInvalidSyncedRef(value.primary)) {
-      const old = value.primary;
       promotedFallback = firstValidFallback(value.fallbacks);
-      const nextPrimary = promotedFallback || fallbackRef;
-      if (nextPrimary) value.primary = nextPrimary;
-      else delete value.primary;
-      messages.push(`${fieldName}.primary: ${old}${nextPrimary ? ` -> ${nextPrimary}` : ' 已清理'}`);
-      changed = true;
+      if (promotedFallback) {
+        messages.push(`${label}.primary: ${value.primary} -> ${promotedFallback}`);
+        value.primary = promotedFallback;
+        changed = true;
+      } else {
+        keepWithWarning(`${label}.primary`, value.primary);
+      }
     }
     if (Array.isArray(value.fallbacks)) {
       const before = value.fallbacks.length;
       value.fallbacks = value.fallbacks.filter((ref) => ref !== promotedFallback && !isInvalidSyncedRef(ref));
       if (value.fallbacks.length !== before) {
-        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
+        messages.push(`${label}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
         changed = true;
       }
     }
-    if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
-      delete defaults[fieldName];
-      changed = true;
-    }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel']) {
-    repairString(field);
-    repairObject(field);
+  for (const field of MODEL_SELECTION_FIELDS) {
+    const value = defaults[field];
+    if (typeof value === 'string') {
+      if (isInvalidSyncedRef(value)) keepWithWarning(field, value);
+    } else if (value && typeof value === 'object') {
+      repairSelectionObject(field, value);
+      if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
+        delete defaults[field];
+        changed = true;
+      }
+    }
   }
   for (const field of ['heartbeat', 'subagents']) {
     const holder = defaults[field];
     if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue;
     const current = holder.model;
     if (typeof current === 'string') {
-      if (isInvalidSyncedRef(current)) {
-        if (fallbackRef) holder.model = fallbackRef; else delete holder.model;
-        changed = true;
-        messages.push(`${field}.model: ${current}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
-      }
+      if (isInvalidSyncedRef(current)) keepWithWarning(`${field}.model`, current);
     } else if (current && typeof current === 'object') {
-      const oldPrimary = current.primary;
-      if (isInvalidSyncedRef(oldPrimary)) {
-        const replacement = firstValidFallback(current.fallbacks) || fallbackRef;
-        if (replacement) current.primary = replacement; else delete current.primary;
-        changed = true;
-        messages.push(`${field}.model.primary: ${oldPrimary}${replacement ? ` -> ${replacement}` : ' 已清理'}`);
-      }
-      if (Array.isArray(current.fallbacks)) current.fallbacks = current.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
+      repairSelectionObject(`${field}.model`, current);
       if (!current.primary && (!Array.isArray(current.fallbacks) || current.fallbacks.length === 0)) delete holder.model;
     }
   }
-  return { changed, messages, _nextDefaults: defaults };
+  return { changed, messages, warnings, _nextDefaults: defaults };
+}
+
+// 收集 defaults 和各 Agent 条目里正在引用本 provider 的模型 id。
+function collectReferencedModelIds(config, providerName) {
+  const ids = new Set();
+  const prefix = `${String(providerName).toLowerCase()}/`;
+  const addRef = (ref) => {
+    if (typeof ref !== 'string' || !ref.toLowerCase().startsWith(prefix)) return;
+    const id = ref.slice(prefix.length);
+    if (id && id !== '*') ids.add(id);
+  };
+  const addSelection = (value) => {
+    if (typeof value === 'string') addRef(value);
+    else if (value && typeof value === 'object') {
+      addRef(value.primary);
+      if (Array.isArray(value.fallbacks)) value.fallbacks.forEach(addRef);
+    }
+  };
+  const addDeep = (value) => {
+    if (typeof value === 'string') addRef(value);
+    else if (Array.isArray(value)) value.forEach(addDeep);
+    else if (value && typeof value === 'object') Object.values(value).forEach(addDeep);
+  };
+  const scan = (holder) => {
+    if (!holder || typeof holder !== 'object') return;
+    for (const field of MODEL_SELECTION_FIELDS) addSelection(holder[field]);
+    for (const field of ['heartbeat', 'subagents']) {
+      if (holder[field] && typeof holder[field] === 'object') addSelection(holder[field].model);
+    }
+    if (holder.mediaModels !== undefined) addDeep(holder.mediaModels);
+  };
+  scan(config.agents?.defaults);
+  for (const entry of Object.values(config.agents?.entries || {})) scan(entry);
+  return ids;
+}
+
+// 上游 /models 偶尔会漏掉仍在用的模型(公益站渠道临时下线最常见)。被默认模型/Agent
+// 引用的旧模型不跟着删,留在列表里并提示,避免同步一次就把正在用的模型删掉。
+function withReferencedModels(config, providerName, upstreamIds, prevModels) {
+  const upstream = new Set(upstreamIds);
+  const keptIds = [...collectReferencedModelIds(config, providerName)]
+    .filter((id) => !upstream.has(id) && prevModels.has(id));
+  return { finalIds: [...upstreamIds, ...keptIds], keptIds };
 }
 
 function guessInputCaps(id) {
@@ -2581,13 +2452,15 @@ async function fetchGatewayProviderModelIds(providerId) {
 function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validModelIds = []) {
   const repaired = {};
   const messages = [];
+  const warnings = [];
   for (const [agentId, entry] of Object.entries(entries || {})) {
     const result = repairModelSelectionForSyncedProvider({ agents: { defaults: entry } }, providerName, validModelIds);
+    warnings.push(...(result.warnings || []).map((message) => `${agentId}.${message}`));
     if (!result.changed) continue;
     repaired[agentId] = result._nextDefaults;
     messages.push(...result.messages.map((message) => `${agentId}.${message}`));
   }
-  return { entries: repaired, messages };
+  return { entries: repaired, messages, warnings };
 }
 
 // 返回 { ids, rawById }:rawById 是 /models 的原始行,用来取真实上下文/输出上限。
@@ -2635,13 +2508,6 @@ async function fetchProviderModelCatalog(provider, providerId = '') {
 }
 
 
-function guessReasoning(id) {
-  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
-  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
-  const s = String(id).toLowerCase();
-  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
-}
-
 // ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
 // 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
 // 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
@@ -2684,7 +2550,7 @@ function normalizeModel(displayName, id, raw = null) {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
+    reasoning: true, // 用户指定:所有模型统一启用 reasoning,不按名称或上游声明区分。
   };
   const { contextWindow, maxTokens } = extractModelLimits(raw);
   if (contextWindow) model.contextWindow = contextWindow;
@@ -2716,10 +2582,10 @@ function mergeModel(displayName, id, prev, raw = null) {
   }
   const result = { ...fresh, ...preserved };
   if (Array.isArray(prev.input) && prev.input.length > 0) result.input = [...prev.input];
-  // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
+  // contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
   // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
   // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
-  if (typeof prev.reasoning === 'boolean') result.reasoning = prev.reasoning;
+  // reasoning 统一使用 fresh 中的 true,不保留旧配置里的 false。
   if (prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
     result.contextWindow = prev.contextWindow;
   }
@@ -3090,6 +2956,8 @@ async function syncAllProviders(ask) {
   let addedTotal = 0, removedTotal = 0, unchangedProviders = 0;
   const detailLines = [];
   const repairedDefaultLines = [];
+  const keptModelLines = [];
+  const selectionWarningLines = [];
   for (const [idx, row] of rows.entries()) {
     console.log('');
     console.log(`${progressBar(idx + 1, rows.length)} 正在同步 ${row.displayName}...`);
@@ -3104,27 +2972,33 @@ async function syncAllProviders(ask) {
     }
     const beforeProvider = beforeCfg.models?.providers?.[row.id] || {};
     const beforeIds = beforeIdsMap.get(row.id) || [];
-    const afterIds = item.status === 0 ? [...item.ids].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN')) : beforeIds;
+    const prevModels = buildPrevModelMap(beforeProvider.models);
+    const { finalIds, keptIds } = item.status === 0
+      ? withReferencedModels(beforeCfg, row.id, item.ids, prevModels)
+      : { finalIds: beforeIds, keptIds: [] };
+    const afterIds = [...finalIds].sort((a, b) => String(a).localeCompare(String(b), 'zh-CN'));
     const { added, removed } = formatModelDelta(beforeIds, afterIds);
     if (item.status === 0) {
       successCount++;
       addedTotal += added.length;
       removedTotal += removed.length;
       if (added.length === 0 && removed.length === 0) unchangedProviders++;
-      const prevModels = buildPrevModelMap(beforeProvider.models);
       const providerPatch = {
         ...beforeProvider,
-        models: item.ids.map((id) => mergeModel(row.displayName || row.id, id, prevModels.get(id), item.rawById?.get(id))),
+        models: finalIds.map((id) => mergeModel(row.displayName || row.id, id, prevModels.get(id), item.rawById?.get(id))),
       };
       patchPayload.models.providers[row.id] = providerPatch;
       if (!nextCfg.models) nextCfg.models = {};
       if (!nextCfg.models.providers) nextCfg.models.providers = {};
       nextCfg.models.providers[row.id] = providerPatch;
-      const repairedDefaults = repairModelSelectionForSyncedProvider(nextCfg, row.id, item.ids);
+      for (const id of keptIds) keptModelLines.push(`${row.id}/${id}`);
+      const repairedDefaults = repairModelSelectionForSyncedProvider(nextCfg, row.id, finalIds);
       if (repairedDefaults.changed) {
         for (const msg of repairedDefaults.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
       }
-      const repairedEntries = repairAgentEntriesForSyncedProvider(nextCfg.agents?.entries, row.id, item.ids);
+      for (const msg of repairedDefaults.warnings || []) selectionWarningLines.push(`${row.id}: ${msg}`);
+      const repairedEntries = repairAgentEntriesForSyncedProvider(nextCfg.agents?.entries, row.id, finalIds);
+      for (const msg of repairedEntries.warnings) selectionWarningLines.push(`${row.id}: ${msg}`);
       if (Object.keys(repairedEntries.entries).length) {
         patchPayload.agents.entries = { ...(patchPayload.agents.entries || {}), ...repairedEntries.entries };
         for (const msg of repairedEntries.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
@@ -3136,9 +3010,10 @@ async function syncAllProviders(ask) {
         if (!nextModelPolicyAllow.some((ref) => String(ref).toLowerCase() === wildcard.toLowerCase())) nextModelPolicyAllow.push(wildcard);
       }
       const seconds = item.durationMs ? `,耗时 ${(item.durationMs / 1000).toFixed(1)}s` : '';
-      const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个${seconds}`, C.white);
+      const keptText = keptIds.length ? `(含 ${keptIds.length} 个仍被引用而保留的模型)` : '';
+      const resultLine = color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${finalIds.length} 个${keptText}${seconds}`, C.white);
       console.log(resultLine);
-      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${item.ids.length} 个`, C.white));
+      detailLines.push(color(`✅ ${formatProviderRow(row)}: 新增 ${added.length} 个,删除 ${removed.length} 个,当前 ${finalIds.length} 个${keptText}`, C.white));
       for (const line of formatModelListBlock('➕', '新增模型', added)) detailLines.push(color(line, C.white));
       for (const line of formatModelListBlock('➖', '删除模型', removed)) detailLines.push(color(line, C.white));
     } else {
@@ -3172,6 +3047,15 @@ async function syncAllProviders(ask) {
   if (repairedDefaultLines.length) {
     info('已修复默认模型引用:');
     for (const line of repairedDefaultLines) console.log(color(`- ${line}`, C.white));
+  }
+  if (keptModelLines.length) {
+    warn('以下模型本次上游 /models 未返回,但仍被默认模型/Agent 配置引用,已保留未删除:');
+    for (const line of keptModelLines) console.log(color(`- ${line}`, C.white));
+    info('如确认这些模型已下线,请到 [1] 换模型切走,下次同步会自动移除。');
+  }
+  if (selectionWarningLines.length) {
+    warn('以下模型引用需要确认(已保留原值,未自动替换):');
+    for (const line of selectionWarningLines) console.log(color(`- ${line}`, C.white));
   }
   if (failCount > 0) {
     info('若有失败，请查看上方对应 API 的报错详情（常见原因：Base URL 错误、API Key 无效、/models 接口异常、返回空模型列表）。');
@@ -3807,6 +3691,38 @@ function getLatestOpenClawVersion(force = false) {
   }
 }
 
+// npm 12 默认拦截包的 preinstall/postinstall,而 OpenClaw 的 postinstall 负责装好打包插件,
+// 被拦掉就是一个残缺的安装。官方要求 npm 12 / 11.16+ 加 --allow-scripts=openclaw;
+// 11.15 及更早没有这个选项,必须不加。所以按本机 npm 版本决定。
+let npmVersionCache = null;
+function getNpmVersion() {
+  if (npmVersionCache !== null) return npmVersionCache;
+  try {
+    const res = runCommand('npm', ['--version'], { timeout: 8000 });
+    const text = String(res.stdout || '').trim();
+    npmVersionCache = res.status === 0 && /^\d+\.\d+\.\d+/.test(text) ? text : '';
+  } catch {
+    npmVersionCache = '';
+  }
+  return npmVersionCache;
+}
+
+function buildOpenClawNpmInstallArgs(spec) {
+  const args = ['install', '-g', spec];
+  const [major = 0, minor = 0] = getNpmVersion().split('.').map((part) => Number(part) || 0);
+  if (major > 11 || (major === 11 && minor >= 16)) args.push('--allow-scripts=openclaw');
+  return args;
+}
+
+// 官方手动升级流程里 npm 装完之后、启动 Gateway 之前的一步:迁移配置/数据库,
+// 并把官方 npm 插件(如 @openclaw/codex)对齐到新版本。--fix 不会交互提问。
+function runOpenClawDoctorFix() {
+  info('正在执行 openclaw doctor --fix(迁移配置/数据库并对齐官方插件),请稍等...');
+  const res = runCommand('openclaw', ['doctor', '--fix'], { stdio: 'inherit' });
+  if (res.status !== 0) warn('openclaw doctor --fix 未成功;仍会尝试启动 Gateway,如启动失败请先手动执行 openclaw doctor --fix。');
+  return res;
+}
+
 function getOpenClawVersionChoices(currentVersionFull) {
   const currentVersion = extractOpenClawVersion(currentVersionFull, currentVersionFull);
   const latestVersion = getLatestOpenClawVersion();
@@ -4056,9 +3972,10 @@ async function installOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
+  const installArgs = buildOpenClawNpmInstallArgs(`openclaw@${currentVersion}`);
   printInfoLines([
     `${color('当前版本：', C.gray)} ${color(currentVersionFull, C.white, C.bold)}`,
-    `${color('说明:', C.gray)} ${color(`将执行 npm install -g openclaw@${currentVersion} 进行同版本重装。`, C.white)}`,
+    `${color('说明:', C.gray)} ${color(`将停止 Gateway → npm ${installArgs.join(' ')} 同版本重装 → 启动 Gateway。`, C.white)}`,
   ]);
   const confirm = await ask(color('确认安装 OpenClaw？(y/N): ', C.yellow, C.bold));
   if (confirm.toLowerCase() !== 'y') {
@@ -4066,13 +3983,17 @@ async function installOpenClaw(ask) {
     await backPrompt(ask);
     return;
   }
+  // 官方要求:手动用 npm 覆盖安装前先停 Gateway,否则运行中的 Gateway 可能在文件替换到一半时加载核心或插件。
+  const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+  if (stopRes.status !== 0) warn('Gateway 停止失败,仍继续尝试安装。');
   info(`正在重装 OpenClaw ${currentVersion}，请稍等...`);
-  const res = runCommand('npm', ['install', '-g', `openclaw@${currentVersion}`], { stdio: 'inherit' });
-  if (res.status === 0) {
-    await finishScreen(ask, [color(`OpenClaw 重装完成。当前版本：${getOpenClawVersion()}`, C.green, C.bold)]);
-  } else {
-    await finishScreen(ask, [color('OpenClaw 重装失败,请检查 npm、网络或权限。', C.red, C.bold)]);
-  }
+  const res = runCommand('npm', installArgs, { stdio: 'inherit' });
+  const startRes = runCommand('openclaw', ['gateway', 'start'], { stdio: 'inherit' });
+  const lines = res.status === 0
+    ? [color(`OpenClaw 重装完成。当前版本：${getOpenClawVersion()}`, C.green, C.bold)]
+    : [color('OpenClaw 重装失败,请检查 npm、网络或权限。', C.red, C.bold)];
+  if (startRes.status !== 0) lines.push(color('Gateway 启动失败,请手动执行 openclaw gateway start 排查。', C.yellow, C.bold));
+  await finishScreen(ask, lines);
 }
 
 async function startOpenClaw(ask) {
@@ -4131,7 +4052,7 @@ async function upgradeOpenClaw(ask) {
     return;
   }
   if (latestVersion === '未知') {
-    warn('暂时无法检测 npm 最新版本,可能是网络问题;仍可尝试用 OpenClaw 官方更新流程。');
+    warn('暂时无法检测 npm 最新版本,可能是网络问题;仍可尝试安装 openclaw@latest。');
   } else {
     info(`检测到新版本 ${latestVersion}。`);
   }
@@ -4144,34 +4065,37 @@ async function upgradeOpenClaw(ask) {
   }
   // 不走 `openclaw update`:它把新版本解压到 /usr/lib/node_modules/.openclaw.update-stage-*,
   // 而它自身的包树校验扫的正是 /usr/lib/node_modules,于是把自己的暂存目录当成"外部改动"
-  // 判定为 global-install-failed 并回滚。改用与降级一致的做法:停 Gateway → npm 直装 → 启动。
+  // 判定为 global-install-failed 并回滚。改走官方文档的手动升级流程:
+  // 停 Gateway → npm 安装(npm 11.16+ 带 --allow-scripts=openclaw) → openclaw doctor --fix → 启动 Gateway。
   const installTarget = latestVersion && latestVersion !== '未知'
     ? `openclaw@${latestVersion}`
     : 'openclaw@latest';
-  info('正在升级:停止 Gateway → npm 安装 → 启动 Gateway');
+  info('正在升级:停止 Gateway → npm 安装 → doctor 迁移修复 → 启动 Gateway');
   const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
   if (stopRes.status !== 0) warn('Gateway 停止失败,仍继续尝试安装。');
   info(`正在安装 ${installTarget},请稍等...`);
-  const res = runCommand('npm', ['install', '-g', installTarget], { stdio: 'inherit' });
+  const res = runCommand('npm', buildOpenClawNpmInstallArgs(installTarget), { stdio: 'inherit' });
+  // 安装失败时不跑 doctor:此时仍是旧版本,直接把 Gateway 拉起来恢复服务即可。
+  const doctorRes = res.status === 0 ? runOpenClawDoctorFix() : null;
   const startRes = runCommand('openclaw', ['gateway', 'start'], { stdio: 'inherit' });
   if (startRes.status !== 0) warn('Gateway 启动失败,请手动执行 openclaw gateway start 排查。');
-  const combinedUpdateOutput = '';
   const newVersion = getOpenClawVersion();
+  const lines = [];
   if (res.status === 0) {
-    const lines = [];
     if (newVersion !== currentVersionFull) {
       lines.push(color(`OpenClaw 升级成功。当前版本：${newVersion}`, C.green, C.bold));
     } else {
       lines.push(color(`更新流程已完成,但当前版本仍为:${newVersion}`, C.yellow, C.bold));
       lines.push(color('这通常表示当前安装源暂无更新,或更新未切换到新的可执行版本。', C.white));
     }
-    if (/Completion cache update failed|ETIMEDOUT/i.test(combinedUpdateOutput)) {
-      lines.push(color('检测到 completion cache 更新超时;这通常不影响本次升级结果,只会影响部分命令补全缓存刷新。', C.white));
+    if (doctorRes && doctorRes.status !== 0) {
+      lines.push(color('openclaw doctor --fix 未成功,配置/数据库迁移或插件对齐可能未完成,请手动执行 openclaw doctor --fix。', C.yellow, C.bold));
     }
-    await finishScreen(ask, lines);
   } else {
-    await finishScreen(ask, [color('OpenClaw 更新命令执行失败,请检查网络、安装源或 update 输出日志。', C.red, C.bold)]);
+    lines.push(color('OpenClaw 安装失败,请检查网络、安装源或上方 npm 输出;Gateway 已按原版本重新启动。', C.red, C.bold));
   }
+  if (startRes.status !== 0) lines.push(color('Gateway 启动失败,请手动执行 openclaw gateway start 排查。', C.yellow, C.bold));
+  await finishScreen(ask, lines);
 }
 
 async function restartGateway(ask) {
@@ -4219,18 +4143,24 @@ function setDowngradeConfigTouchedVersion(targetVersion) {
   } catch {
     // 落到路径 2
   }
-  // 路径 2:CLI 不可用时直接写文件;只做定向文本替换,保留剩余 JSON5 内容、文件权限与属主,绝不整体重写。
+  // 路径 2:CLI 不可用时直接写文件;只做定向文本替换,保留剩余 JSON5 内容、文件权限与属主。
+  // 这是全脚本唯一绕过 OpenClaw 写入保护(size-drop)的路径,所以额外加三道闸:
+  //   ① 直写前先留一份带时间戳的备份(备份失败就放弃直写);
+  //   ② 自带体积保护:新内容不足原文一半就拒绝,与官方规则一致;
+  //   ③ 原文含 JSON5 注释时,拒绝"整份重写"分支,避免把注释抹掉。
   try {
     const raw = fs.readFileSync(CONFIG, 'utf8');
     const stat = fs.statSync(CONFIG);
     const hasMeta = /(^|[\s,])meta\s*:/.test(raw);
     let next;
+    let wholeRewrite = false;
     if (hasMeta) {
       next = raw
         .replace(/(lastTouchedVersion\s*:\s*)("[^"]*"|'[^']*'|\d+)/, `$1"${normalized}"`)
         .replace(/(lastTouchedAt\s*:\s*)("[^"]*"|'[^']*')/, `$1"${touchedAt}"`);
       if (next === raw) {
         // 有 meta 但缺字段:回退到 JSON 解析补全(仍保留权限)。
+        wholeRewrite = true;
         const cfg = JSON.parse(raw);
         cfg.meta = cfg.meta && typeof cfg.meta === 'object' && !Array.isArray(cfg.meta) ? cfg.meta : {};
         cfg.meta.lastTouchedVersion = normalized;
@@ -4238,9 +4168,26 @@ function setDowngradeConfigTouchedVersion(targetVersion) {
         next = `${JSON.stringify(cfg, null, 2)}\n`;
       }
     } else {
+      wholeRewrite = true;
       const cfg = JSON.parse(raw);
       cfg.meta = { lastTouchedVersion: normalized, lastTouchedAt: touchedAt };
       next = `${JSON.stringify(cfg, null, 2)}\n`;
+    }
+    // ③ 含 JSON5 注释时不做整份重写(会丢注释)
+    if (wholeRewrite && /(^|[^:\w])\/\/|\/\*/.test(raw)) {
+      return { ok: false, reason: '配置含 JSON5 注释,拒绝整份重写;请先让 openclaw CLI 恢复可用' };
+    }
+    // ② 自带体积保护(与官方 size-drop 规则一致)
+    const rawBytes = Buffer.byteLength(raw, 'utf8');
+    const nextBytes = Buffer.byteLength(next, 'utf8');
+    if (rawBytes >= 512 && nextBytes < Math.floor(rawBytes * 0.5)) {
+      return { ok: false, reason: `体积骤降已拒绝(${rawBytes} -> ${nextBytes});请先让 openclaw CLI 恢复可用` };
+    }
+    // ① 直写前先备份
+    try {
+      fs.copyFileSync(CONFIG, `${CONFIG}.manual-${new Date().toISOString().replace(/[:.]/g, '-')}`, fs.constants.COPYFILE_EXCL);
+    } catch (backupErr) {
+      return { ok: false, reason: `备份失败,已放弃直写:${backupErr.message}` };
     }
     const tmp = `${CONFIG}.tmp-${process.pid}-${Date.now()}`;
     fs.writeFileSync(tmp, next, 'utf8');
@@ -4397,8 +4344,11 @@ function cleanupGatewayService() {
     const uid = typeof process.getuid === 'function' ? process.getuid() : '';
     if (uid !== '') pushStep('launchctl bootout', runLaunchctl(['bootout', `gui/${uid}/${label}`]), { tolerateMissing: true });
     try {
-      fs.rmSync(plistPath, { force: true });
-      result.steps.push({ name: 'remove-launchd-plist', ok: true, path: plistPath });
+      // 与 Linux 分支一致:改名保留(带时间戳),不直接删除,误触可恢复。
+      // launchd 只加载 *.plist,改名后不会再被加载,效果等同移除。
+      const movedPlist = `${plistPath}.removed-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+      fs.renameSync(plistPath, movedPlist);
+      result.steps.push({ name: 'remove-launchd-plist', ok: true, path: movedPlist, moved: [movedPlist] });
     } catch (err) {
       result.ok = false;
       result.steps.push({ name: 'remove-launchd-plist', ok: false, output: err.message, path: plistPath });
@@ -4415,10 +4365,22 @@ function cleanupGatewayService() {
   const { serviceName, servicePath, dropInDir } = getSystemdUserGatewayServicePaths();
   pushStep('stop', runSystemdUser(['stop', serviceName]), { tolerateMissing: true });
   pushStep('disable', runSystemdUser(['disable', serviceName]), { tolerateMissing: true });
+  // 不直接删除服务文件与 drop-in 目录:改名保留(带时间戳),误触还能改回来。
+  // systemd 只加载 *.service 与 <unit>.d/*.conf,改名后不会被加载,效果等同移除。
+  const removedStamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const movedPaths = [];
   try {
-    fs.rmSync(servicePath, { force: true });
-    fs.rmSync(dropInDir, { recursive: true, force: true });
-    result.steps.push({ name: 'remove-service-file', ok: true, path: servicePath });
+    if (fs.existsSync(servicePath)) {
+      const moved = `${servicePath}.removed-${removedStamp}`;
+      fs.renameSync(servicePath, moved);
+      movedPaths.push(moved);
+    }
+    if (fs.existsSync(dropInDir)) {
+      const moved = `${dropInDir}.removed-${removedStamp}`;
+      fs.renameSync(dropInDir, moved);
+      movedPaths.push(moved);
+    }
+    result.steps.push({ name: 'remove-service-file', ok: true, path: movedPaths.join(', ') || servicePath, moved: movedPaths });
   } catch (err) {
     result.ok = false;
     result.steps.push({ name: 'remove-service-file', ok: false, output: err.message, path: servicePath });
@@ -4436,7 +4398,7 @@ async function installSpecificOpenClawVersion(ask) {
   console.log(`当前版本：${color(currentVersionFull, C.yellow, C.bold)}`);
   console.log('');
   warn('该功能适用于安装指定版本,或在新版本回归时临时回退。');
-  info('升级时通常无需先停 Gateway；降级时脚本会先停止 Gateway,再安装旧版本并按需用恢复模式重新启动。');
+  info('安装前会先停止 Gateway;升级到更新版本时装完会执行 openclaw doctor --fix;降级会按需用恢复模式重新启动。');
 
   const choices = getOpenClawVersionChoices(currentVersionFull);
   console.log('');
@@ -4522,20 +4484,36 @@ async function installSpecificOpenClawVersion(ask) {
       return;
     }
     info('检测到是降级操作,先停止 Gateway 以避免旧版本 binary 直接接管新配置。');
-    const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
-    if (stopRes.status === 0) {
-      lines.push(color('Gateway 已停止。', C.green, C.bold));
-    } else {
-      lines.push(color('Gateway 停止失败;将继续尝试安装目标版本,但后续接管可能受影响。', C.yellow, C.bold));
-    }
+  } else {
+    // 官方要求:手动用 npm 覆盖安装前先停 Gateway,否则运行中的 Gateway 可能在文件替换到一半时加载核心或插件。
+    info('安装前先停止 Gateway,避免运行中的 Gateway 在文件替换到一半时加载核心或插件。');
+  }
+  const stopRes = runCommand('openclaw', ['gateway', 'stop'], { stdio: 'inherit' });
+  if (stopRes.status === 0) {
+    lines.push(color('Gateway 已停止。', C.green, C.bold));
+  } else {
+    lines.push(color('Gateway 停止失败;将继续尝试安装目标版本,但后续接管可能受影响。', C.yellow, C.bold));
   }
 
   info(`正在安装 openclaw@${targetVersion}，请稍等...`);
-  const installRes = runCommand('npm', ['install', '-g', `openclaw@${targetVersion}`], { stdio: 'inherit' });
+  const installRes = runCommand('npm', buildOpenClawNpmInstallArgs(`openclaw@${targetVersion}`), { stdio: 'inherit' });
   const newVersion = getOpenClawVersion();
   if (installRes.status !== 0) {
-    await finishScreen(ask, [color('指定版本安装失败,请检查 npm、网络或版本号是否存在。', C.red, C.bold)]);
+    // Gateway 已经停了,安装失败时仍是原版本,把它拉起来,别让服务一直停着。
+    const recoverRes = runCommand('openclaw', ['gateway', 'start'], { stdio: 'inherit' });
+    const failLines = [color('指定版本安装失败,请检查 npm、网络或版本号是否存在。', C.red, C.bold)];
+    failLines.push(recoverRes.status === 0
+      ? color('Gateway 已按原版本重新启动。', C.white)
+      : color('Gateway 重新启动失败,请手动执行 openclaw gateway start 排查。', C.yellow, C.bold));
+    await finishScreen(ask, failLines);
     return;
+  }
+  const isUpgrade = currentVersion !== '未知版本' && compareReleaseVersions(targetVersion, currentVersion) > 0;
+  if (isUpgrade) {
+    const doctorRes = runOpenClawDoctorFix();
+    if (doctorRes.status !== 0) {
+      lines.push(color('openclaw doctor --fix 未成功,配置/数据库迁移或插件对齐可能未完成,请手动执行 openclaw doctor --fix。', C.yellow, C.bold));
+    }
   }
 
   if (!String(newVersion).includes(targetVersion)) {
@@ -4777,7 +4755,7 @@ async function uninstallOpenClaw(ask) {
   if (serviceCleanup.skipped) {
     warn(`Gateway 服务清理已跳过:${serviceCleanup.reason}`);
   } else if (serviceCleanup.ok) {
-    success('Gateway 服务已卸载,残留服务文件已删除。');
+    success('Gateway 服务已卸载,残留服务文件已改名保留（可恢复）。');
   } else {
     warn('Gateway 服务清理未完全成功,后续仍会继续卸载。');
     for (const step of serviceCleanup.steps || []) {
@@ -4813,7 +4791,7 @@ async function purgeOpenClaw(ask) {
   if (serviceCleanup.skipped) {
     warn(`Gateway 服务清理已跳过:${serviceCleanup.reason}`);
   } else if (serviceCleanup.ok) {
-    success('Gateway 服务已卸载,残留服务文件已删除。');
+    success('Gateway 服务已卸载,残留服务文件已改名保留（可恢复）。');
   } else {
     warn('Gateway 服务清理未完全成功,后续仍会继续卸载。');
     for (const step of serviceCleanup.steps || []) {

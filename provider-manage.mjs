@@ -94,6 +94,9 @@ function writeJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
+// 同步等待:脚本是同步流程,这里用 Atomics.wait,不再起子进程 sleep。
+const sleepMs = (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {} };
+
 function runConfigPatch(patch, extraArgs = []) {
   return spawnSync('openclaw', ['config', 'patch', ...extraArgs, '--stdin'], {
     input: JSON.stringify(patch, null, 2),
@@ -109,6 +112,83 @@ function printConfigPatchFailure(result, label = 'Failed to apply config patch')
   else if (result?.error) console.error(result.error.message);
   if (result?.stdout) console.error(String(result.stdout).trim());
   if (result?.stderr) console.error(String(result.stderr).trim());
+}
+
+// ---- 体积保护(size-drop)友好的分步删除 ----
+// OpenClaw 的写入安全会拒绝「新配置 < 基线字节 × 50%」的写入
+// (io.warnings 里 size-drop 与 size-drop-vs-last-good 两条判定)。
+// 大 provider(几十个模型)一次删干净会让体积腰斩而被拒；
+// 这里改成分几步砍短 models 数组，每步都保证整份配置体积仍 ≥ 基线的 55%，
+// 于是既不需要任何绕过开关，也不会留下写残的配置。
+const SIZE_GUARD_RATIO = 0.55;
+
+function readConfigBytes() {
+  try { return fs.statSync(CONFIG).size; } catch { return 0; }
+}
+
+function sizeGuardFloorBytes() {
+  let baseline = readConfigBytes();
+  try { baseline = Math.max(baseline, fs.statSync(`${CONFIG}.last-good`).size); } catch {}
+  return Math.floor(baseline * SIZE_GUARD_RATIO);
+}
+
+// 估算「把该 provider 的 models 截到 keepCount 个之后」整份配置的字节数。
+// 官方写盘就是 JSON.stringify(cfg, null, 2) + '\n'，所以这个估算与实际一致。
+function projectTrimmedBytes(providerId, keepCount) {
+  let live;
+  try { live = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return null; }
+  const item = live?.models?.providers?.[providerId];
+  if (!item || !Array.isArray(item.models)) return null;
+  item.models = item.models.slice(0, keepCount);
+  return Buffer.byteLength(`${JSON.stringify(live, null, 2)}\n`, 'utf8');
+}
+
+// true = 已把该 provider 的 models 清空(或无需处理)；false = 失败，调用方应停止。
+function trimProviderModelsStepwise(providerId) {
+  for (let step = 1; step <= 40; step += 1) {
+    let live;
+    try { live = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch {
+      console.error(`分步删除 ${providerId}: 配置读取失败。`);
+      return false;
+    }
+    const item = live?.models?.providers?.[providerId];
+    if (!item) return true;
+    const models = Array.isArray(item.models) ? item.models : [];
+    if (!models.length) return true;
+    const floor = sizeGuardFloorBytes();
+    // 二分找「本步能删得最多、同时整份配置体积仍 ≥ floor」的保留数量。
+    // 比"每次减半"少走好几步（保护线是 50%，我们只看整份配置字节数）。
+    let lo = 0;
+    let hi = models.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((projectTrimmedBytes(providerId, mid) ?? 0) >= floor) hi = mid;
+      else lo = mid + 1;
+    }
+    const keep = lo;
+    const projected = projectTrimmedBytes(providerId, keep) ?? 0;
+    if (keep >= models.length || projected < floor) {
+      console.error(`分步删除 ${providerId}: 还剩 ${models.length} 个模型时，体积无法再保持在 ${floor} 字节以上，` +
+        '继续删会触发写入保护。请先扩大配置(或直接改 openclaw.json)。');
+      return false;
+    }
+    console.error(`  [分步 ${step}] ${providerId} 模型 ${models.length} → ${keep}（体积下限 ${floor} 字节 / 预计 ${projected}）`);
+    const stepPatch = { models: { providers: { [providerId]: { models: models.slice(0, keep) } } } };
+    const stepArgs = ['--replace-path', `models.providers.${providerId}.models`];
+    let res = runConfigPatch(stepPatch, stepArgs);
+    if (res.status !== 0) {
+      // 网关瞬时繁忙很常见,自动重试一次再放弃
+      console.error(`  第 ${step} 步写入失败,2 秒后重试一次...`);
+      sleepMs(2000);
+      res = runConfigPatch(stepPatch, stepArgs);
+    }
+    if (res.status !== 0) {
+      printConfigPatchFailure(res, `分步删除 ${providerId} 的第 ${step} 步失败`);
+      return false;
+    }
+  }
+  console.error(`分步删除 ${providerId}: 超过 40 步仍未清空，停止。`);
+  return false;
 }
 
 let cfg;
@@ -244,91 +324,132 @@ function buildAgentEntriesPatch(entries = {}, oldName, newName = '', remove = fa
   return patch;
 }
 
+const MODEL_SELECTION_FIELDS = ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel'];
+
+// 同步后只做两件安全的修复:失效的 primary 换成同字段里仍有效的 fallback、清掉失效的 fallback。
+// 以前找不到 fallback 时会拿 /models 列表第一个模型顶上,那可能是嵌入/图像模型,
+// 默认模型会直接变成不能聊天的模型;现在原值保留,只给出警告,由用户自己换。
 function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
-  let defaults; try { defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {})); } catch { return { changed: false, messages: ['序列化配置失败，跳过修复。'], _nextDefaults: config.agents?.defaults || {} }; }
-  if (!defaults || Object.keys(defaults).length === 0) return { changed: false, messages: [], _nextDefaults: config.agents?.defaults || {} };
-  const validRefs = new Set(validModelIds.map((id) => `${providerName}/${id}`));
-  const fallbackRef = validModelIds.length ? `${providerName}/${validModelIds[0]}` : '';
+  let defaults; try { defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {})); } catch { return { changed: false, messages: ['序列化配置失败，跳过修复。'], warnings: [], _nextDefaults: config.agents?.defaults || {} }; }
+  if (!defaults || Object.keys(defaults).length === 0) return { changed: false, messages: [], warnings: [], _nextDefaults: config.agents?.defaults || {} };
+  const validIds = new Set(validModelIds);
   const messages = [];
+  const warnings = [];
   let changed = false;
 
+  const modelIdOf = (ref) => {
+    const slash = ref.indexOf('/');
+    return slash === -1 ? '' : ref.slice(slash + 1);
+  };
   const isSameProviderRef = (ref) => typeof ref === 'string' && ref.split('/')[0]?.toLowerCase() === providerName.toLowerCase();
-  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validRefs.has(ref);
-  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validRefs.has(ref);
-  const firstValidFallback = (fallbacks = []) => Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '';
-
-  const repairString = (fieldName) => {
-    const value = defaults[fieldName];
-    if (!isInvalidSyncedRef(value)) return;
-    if (fallbackRef) {
-      defaults[fieldName] = fallbackRef;
-      messages.push(`${fieldName}: ${value} -> ${fallbackRef}`);
-    } else {
-      delete defaults[fieldName];
-      messages.push(`${fieldName}: 已清理失效引用 ${value}`);
-    }
-    changed = true;
+  const isValidSyncedRef = (ref) => isSameProviderRef(ref) && validIds.has(modelIdOf(ref));
+  const isInvalidSyncedRef = (ref) => isSameProviderRef(ref) && !validIds.has(modelIdOf(ref));
+  const firstValidFallback = (fallbacks = []) => (Array.isArray(fallbacks) ? fallbacks.find((ref) => isValidSyncedRef(ref)) : '') || '';
+  const keepWithWarning = (label, ref) => {
+    warnings.push(`${label}: ${ref} 不在上游模型列表中,已保留原值;如该模型确已下线,请到 [1] 换模型手动切换。`);
   };
 
-  const repairObject = (fieldName) => {
-    const value = defaults[fieldName];
-    if (!value || typeof value !== 'object') return;
+  const repairSelectionObject = (label, value) => {
     let promotedFallback = '';
     if (isInvalidSyncedRef(value.primary)) {
-      const old = value.primary;
       promotedFallback = firstValidFallback(value.fallbacks);
-      const nextPrimary = promotedFallback || fallbackRef;
-      if (nextPrimary) value.primary = nextPrimary;
-      else delete value.primary;
-      messages.push(`${fieldName}.primary: ${old}${nextPrimary ? ` -> ${nextPrimary}` : ' 已清理'}`);
-      changed = true;
+      if (promotedFallback) {
+        messages.push(`${label}.primary: ${value.primary} -> ${promotedFallback}`);
+        value.primary = promotedFallback;
+        changed = true;
+      } else {
+        keepWithWarning(`${label}.primary`, value.primary);
+      }
     }
     if (Array.isArray(value.fallbacks)) {
       const before = value.fallbacks.length;
       value.fallbacks = value.fallbacks.filter((ref) => ref !== promotedFallback && !isInvalidSyncedRef(ref));
       if (value.fallbacks.length !== before) {
-        messages.push(`${fieldName}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
+        messages.push(`${label}.fallbacks: 已清理 ${before - value.fallbacks.length} 个失效或已提升引用`);
         changed = true;
       }
     }
-    if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
-      delete defaults[fieldName];
-      changed = true;
-    }
   };
 
-  for (const field of ['model', 'imageModel', 'pdfModel', 'audioModel', 'videoGenerationModel', 'musicGenerationModel', 'utilityModel', 'voiceModel']) {
-    repairString(field);
-    repairObject(field);
+  for (const field of MODEL_SELECTION_FIELDS) {
+    const value = defaults[field];
+    if (typeof value === 'string') {
+      if (isInvalidSyncedRef(value)) keepWithWarning(field, value);
+    } else if (value && typeof value === 'object') {
+      repairSelectionObject(field, value);
+      if (!value.primary && (!Array.isArray(value.fallbacks) || value.fallbacks.length === 0)) {
+        delete defaults[field];
+        changed = true;
+      }
+    }
   }
   for (const field of ['heartbeat', 'subagents']) {
     const holder = defaults[field];
     if (!holder || typeof holder !== 'object' || Array.isArray(holder)) continue;
     const current = holder.model;
     if (typeof current === 'string') {
-      if (isInvalidSyncedRef(current)) {
-        if (fallbackRef) holder.model = fallbackRef;
-        else delete holder.model;
-        changed = true;
-        messages.push(`${field}.model: ${current}${fallbackRef ? ` -> ${fallbackRef}` : ' 已清理'}`);
-      }
+      if (isInvalidSyncedRef(current)) keepWithWarning(`${field}.model`, current);
     } else if (current && typeof current === 'object') {
-      const oldPrimary = current.primary;
-      if (isInvalidSyncedRef(oldPrimary)) {
-        const replacement = firstValidFallback(current.fallbacks) || fallbackRef;
-        if (replacement) current.primary = replacement; else delete current.primary;
-        changed = true;
-        messages.push(`${field}.model.primary: ${oldPrimary}${replacement ? ` -> ${replacement}` : ' 已清理'}`);
-      }
-      if (Array.isArray(current.fallbacks)) {
-        const before = current.fallbacks.length;
-        current.fallbacks = current.fallbacks.filter((ref) => !isInvalidSyncedRef(ref));
-        if (current.fallbacks.length !== before) changed = true;
-      }
+      repairSelectionObject(`${field}.model`, current);
       if (!current.primary && (!Array.isArray(current.fallbacks) || current.fallbacks.length === 0)) delete holder.model;
     }
   }
-  return { changed, messages, _nextDefaults: defaults };
+  return { changed, messages, warnings, _nextDefaults: defaults };
+}
+
+// 收集 defaults 和各 Agent 条目里正在引用本 provider 的模型 id。
+function collectReferencedModelIds(config, providerName) {
+  const ids = new Set();
+  const prefix = `${String(providerName).toLowerCase()}/`;
+  const addRef = (ref) => {
+    if (typeof ref !== 'string' || !ref.toLowerCase().startsWith(prefix)) return;
+    const id = ref.slice(prefix.length);
+    if (id && id !== '*') ids.add(id);
+  };
+  const addSelection = (value) => {
+    if (typeof value === 'string') addRef(value);
+    else if (value && typeof value === 'object') {
+      addRef(value.primary);
+      if (Array.isArray(value.fallbacks)) value.fallbacks.forEach(addRef);
+    }
+  };
+  const addDeep = (value) => {
+    if (typeof value === 'string') addRef(value);
+    else if (Array.isArray(value)) value.forEach(addDeep);
+    else if (value && typeof value === 'object') Object.values(value).forEach(addDeep);
+  };
+  const scan = (holder) => {
+    if (!holder || typeof holder !== 'object') return;
+    for (const field of MODEL_SELECTION_FIELDS) addSelection(holder[field]);
+    for (const field of ['heartbeat', 'subagents']) {
+      if (holder[field] && typeof holder[field] === 'object') addSelection(holder[field].model);
+    }
+    if (holder.mediaModels !== undefined) addDeep(holder.mediaModels);
+  };
+  scan(config.agents?.defaults);
+  for (const entry of Object.values(config.agents?.entries || {})) scan(entry);
+  return ids;
+}
+
+// 上游 /models 偶尔会漏掉仍在用的模型(公益站渠道临时下线最常见)。被默认模型/Agent
+// 引用的旧模型不跟着删,留在列表里并提示,避免同步一次就把正在用的模型删掉。
+function withReferencedModels(config, providerName, upstreamIds, prevModels) {
+  const upstream = new Set(upstreamIds);
+  const keptIds = [...collectReferencedModelIds(config, providerName)]
+    .filter((id) => !upstream.has(id) && prevModels.has(id));
+  return { finalIds: [...upstreamIds, ...keptIds], keptIds };
+}
+
+function printSyncReferenceNotes(providerName, keptIds = [], warnings = []) {
+  if (keptIds.length) {
+    console.log(`Kept referenced models: ${keptIds.length}`);
+    for (const id of keptIds) console.log(`- ${providerName}/${id}(上游 /models 本次未返回,但仍被默认模型/Agent 配置引用,已保留未删除)`);
+    console.log('如确认这些模型已下线,请到 [1] 换模型切走,下次同步会自动移除。');
+  }
+  if (warnings.length) {
+    console.log('需要确认的模型引用(已保留原值,未自动替换):');
+    for (const msg of warnings) console.log(`- ${msg}`);
+  }
 }
 
 function pruneModelSelection(config, name) {
@@ -390,13 +511,6 @@ function pruneModelSelection(config, name) {
 function guessInputCaps(id) {
   return /(vision|vl|image|4o|gemini|gpt-4\.1|o4)/i.test(id) ? ['text', 'image'] : ['text'];
 }
-function guessReasoning(id) {
-  // 图像/音频/视频类模型不产出思考内容,标记为 reasoner 会让上游收到它不认的
-  // reasoning 参数(OpenClaw 自己在图像重试时也会剥掉),故一律不写。
-  const s = String(id).toLowerCase();
-  return !/(image|imagine|tts|whisper|audio|music|voice)/.test(s);
-}
-
 // ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
 // 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
 // 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
@@ -439,7 +553,7 @@ function normalizeModel(displayName, id, raw = null) {
     id,
     name: `${displayName} / ${id}`,
     input: guessInputCaps(id),
-    reasoning: guessReasoning(id), // 文本模型走思考(reasoner);图像/音频类不写
+    reasoning: true, // 用户指定:所有模型统一启用 reasoning,不按名称或上游声明区分。
   };
   const { contextWindow, maxTokens } = extractModelLimits(raw);
   if (contextWindow) model.contextWindow = contextWindow;
@@ -471,10 +585,10 @@ function mergeModel(displayName, id, prev, raw = null) {
   }
   const result = { ...fresh, ...preserved };
   if (Array.isArray(prev.input) && prev.input.length > 0) result.input = [...prev.input];
-  // reasoning / contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
+  // contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
   // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
   // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
-  if (typeof prev.reasoning === 'boolean') result.reasoning = prev.reasoning;
+  // reasoning 统一使用 fresh 中的 true,不保留旧配置里的 false。
   if (prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
     result.contextWindow = prev.contextWindow;
   }
@@ -634,17 +748,36 @@ if (action === 'remove') {
   for (const agentId of Object.keys(agentEntriesPatch)) agentEntryReplacePaths.push('--replace-path', `agents.entries[${JSON.stringify(agentId)}]`);
   const agentsPatch = { defaults: defaultsPatch };
   if (Object.keys(agentEntriesPatch).length) agentsPatch.entries = agentEntriesPatch;
-  console.error('正在写入配置，请稍等...');
-  const patchRes = runConfigPatch({
+  if (Array.isArray(provider.models) && provider.models.length) {
+    console.error(`正在分步删除 ${providerName} 的 ${provider.models.length} 个模型条目（每步保持配置体积 ≥ 基线 55%，不触发写入保护）...`);
+    if (!trimProviderModelsStepwise(providerName)) process.exit(7);
+  }
+  const finalPatch = {
     models: {
       providers: {
         [providerName]: null,
       },
     },
     agents: agentsPatch,
-  }, agentEntryReplacePaths);
+  };
+  let patchRes;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    console.error(attempt === 1 ? '正在写入配置，请稍等...' : `写入失败,2 秒后重试(第 ${attempt} 次)...`);
+    patchRes = runConfigPatch(finalPatch, agentEntryReplacePaths);
+    if (patchRes.status === 0) break;
+    if (attempt < 3) sleepMs(2000);
+  }
   if (patchRes.status !== 0) {
-    printConfigPatchFailure(patchRes);
+    // 若是"模型已清空但 provider 本体没删掉"的半成品态:配置依然有效,重跑一次即可
+    let partial = false;
+    try {
+      const live = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+      const item = live?.models?.providers?.[providerName];
+      partial = Boolean(item) && (!Array.isArray(item.models) || item.models.length === 0);
+    } catch {}
+    printConfigPatchFailure(patchRes, partial
+      ? `${providerName} 的模型已清空,但 provider 本体删除失败;配置仍然有效,重跑本命令即可`
+      : 'Failed to apply config patch');
     process.exit(patchRes.status || 4);
   }
   writeJson(DISPLAY_NAMES, displayNames);
@@ -666,11 +799,13 @@ async function fetchGatewayProviderModelIds(providerId) {
 
 function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validModelIds = []) {
   const repaired = {};
+  const warnings = [];
   for (const [agentId, entry] of Object.entries(entries || {})) {
     const result = repairModelSelectionForSyncedProvider({ agents: { defaults: entry } }, providerName, validModelIds);
     if (result.changed) repaired[agentId] = result._nextDefaults;
+    warnings.push(...(result.warnings || []).map((msg) => `${agentId}.${msg}`));
   }
-  return repaired;
+  return { entries: repaired, warnings };
 }
 
 if (action === 'sync') {
@@ -694,17 +829,18 @@ if (action === 'sync') {
     let previousDefaults; try { previousDefaults = JSON.parse(JSON.stringify(cfg.agents?.defaults || {})); } catch { console.error('配置序列化失败，无法继续。'); process.exit(1); }
     const displayName = getProviderDisplayName(providerName);
     const prevModels = buildPrevModelMap(provider.models);
+    const { finalIds, keptIds } = withReferencedModels(cfg, providerName, ids, prevModels);
     // Gateway 的 models.list 只是回显本地配置,拿不到上游真实规格,所以不传 raw:
     // 上下文/输出上限交给 mergeModel 的"保留手工值、丢弃写死占位值"规则处理。
-    provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id), null));
+    provider.models = finalIds.map(id => mergeModel(displayName, id, prevModels.get(id), null));
     const addedModels = ids.filter(id => !prevModels.has(id)).length;
-    const removedModels = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
+    const removedModels = [...prevModels.keys()].filter(id => !finalIds.includes(id)).length;
     const modelRefPatch = clearProviderModelRefs(modelMap, providerName);
-    const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
+    const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, finalIds);
     const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}), previousDefaults);
     const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
     if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
-    const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
+    const { entries: repairedEntries, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
     if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
     const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: defaultsPatch } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
@@ -713,9 +849,14 @@ if (action === 'sync') {
     const patchRes = runConfigPatch(patch, replacePaths);
     if (patchRes.status !== 0) { printConfigPatchFailure(patchRes); process.exit(patchRes.status || 4); }
     console.log(`Synced provider: ${providerName}`);
-    console.log(`Models now present: ${ids.length}`);
+    console.log(`Models now present: ${finalIds.length}`);
     console.log(`Added models: ${addedModels}`);
     console.log(`Removed models: ${removedModels}`);
+    if (repairedDefaults.changed) {
+      console.log('Repaired default model refs:');
+      for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
+    }
+    printSyncReferenceNotes(providerName, keptIds, [...(repairedDefaults.warnings || []), ...entryWarnings]);
     process.exit(0);
   }
   const modelsUrl = (() => {
@@ -789,11 +930,12 @@ if (action === 'sync') {
     const rowId = row?.id;
     if (rowId && !rawById.has(rowId)) rawById.set(rowId, row);
   }
-  provider.models = ids.map(id => mergeModel(displayName, id, prevModels.get(id), rawById.get(id)));
+  const { finalIds, keptIds } = withReferencedModels(cfg, providerName, ids, prevModels);
+  provider.models = finalIds.map(id => mergeModel(displayName, id, prevModels.get(id), rawById.get(id)));
   const added = ids.filter(id => !prevModels.has(id)).length;
-  const removed = [...prevModels.keys()].filter(id => !ids.includes(id)).length;
+  const removed = [...prevModels.keys()].filter(id => !finalIds.includes(id)).length;
   const modelRefPatch = clearProviderModelRefs(modelMap, providerName);
-  const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, ids);
+  const repairedDefaults = repairModelSelectionForSyncedProvider({ agents: { defaults: cfg.agents?.defaults } }, providerName, finalIds);
   const defaultsPatch = buildDefaultSelectionPatch(
     repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}),
     previousDefaults
@@ -801,7 +943,7 @@ if (action === 'sync') {
   const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
-  const repairedEntries = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, ids);
+  const { entries: repairedEntries, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -824,11 +966,12 @@ if (action === 'sync') {
   }
   console.log(`Synced provider: ${providerName}`);
   console.log(`Display name: ${displayName}`);
-  console.log(`Models now present: ${ids.length}`);
+  console.log(`Models now present: ${finalIds.length}`);
   console.log(`Added models: ${added}`);
   console.log(`Removed models: ${removed}`);
   if (repairedDefaults.changed) {
     console.log('Repaired default model refs:');
     for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
   }
+  printSyncReferenceNotes(providerName, keptIds, [...(repairedDefaults.warnings || []), ...entryWarnings]);
 }
