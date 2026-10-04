@@ -223,92 +223,203 @@ function normalizeModel(displayName, id, raw = null) {
 // ===== ocapi:model-meta 结束 =====
 
 // ===== ocapi:json5-safe-read 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
-// OpenClaw 配置是 JSON5(允许注释、末尾逗号、单引号字符串),但脚本用 JSON.parse 读会直接失败,
-// 导致加了注释的 openclaw.json 被误判为“损坏”,加/删/同步全部不可用。
-// 这里加一层容错解析:先试标准 JSON,失败再剥注释/尾逗号,最后再规范单引号字符串;仍失败才当真损坏。
-// 只用于读取,写入一律继续走 openclaw config patch,绝不回写文件、不动原格式。
-function stripJson5(raw) {
-  const text = String(raw || '');
-  let out = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (ch === '\n') { inLine = false; out += ch; }
-      continue;
-    }
-    if (inBlock) {
-      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
-      continue;
-    }
-    if (inString) {
-      out += ch;
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === quote) inString = false;
-      continue;
-    }
-    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
-    if (ch === '/' && next === '/') { inLine = true; i += 1; continue; }
-    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
-    out += ch;
-  }
-  // 去掉对象/数组里最后一个元素后的多余逗号
-  return out.replace(/,(\s*[}\]])/g, '$1');
-}
+// OpenClaw 的 openclaw.json 是 JSON5:允许注释、末尾逗号、单引号字符串、不加引号的键名、
+// 十六进制数等。只用 JSON.parse 读的话,手动加过一行注释就会被当成"损坏",加/删/同步全部不可用。
+// 先走 JSON.parse(标准 JSON 结果一字不差);失败再交给下面这个逐字符的 JSON5 解析器。
+// 读出来的值会经 openclaw config patch 写回(同步会整块写回 heartbeat、provider 等字段),
+// 所以解析必须精确,不能"先改写文本再 JSON.parse":那样会误改字符串里的内容(比如提示词里的 ", ]")。
+// 本段只解析、不改写文本;写入仍一律走 openclaw config patch,脚本不直接写 openclaw.json。
+// 全部写成函数声明、不用模块级常量:provider-manage.mjs 在本段之前就会调用 parseJsonLoose,
+// 函数声明会被提升,模块级 const 那时还在暂时性死区里。
+function parseJson5(source) {
+  const text = String(source);
+  let pos = 0;
+  const numberRe = /[+-]?(?:Infinity|NaN|0[xX][0-9a-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/y;
 
-// JSON5 允许单引号字符串。只在严格解析与前一步都失败时,才把单引号字符串规范成双引号。
-function normalizeSingleQuotedStrings(text) {
-  let out = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        // 转义字符要重新判定:单引号串里的 \' 直接还原成 ',其余转义按原样保留
-        if (quote === "'" && ch === "'") { out += "'"; continue; }
-        if (quote === "'" && ch === '"') { out += '\\"'; continue; }
-        out += '\\' + ch;
+  const fail = (message) => {
+    const before = text.slice(0, pos);
+    const lineNo = before.split('\n').length;
+    const column = pos - before.lastIndexOf('\n');
+    throw new SyntaxError(`JSON5 解析失败(第 ${lineNo} 行第 ${column} 列):${message}`);
+  };
+  const isLineTerminator = (ch) => ch === '\n' || ch === '\r' || ch === ' ' || ch === ' ';
+  const isIdentifierStart = (ch) => typeof ch === 'string' && /^[\p{ID_Start}$_]$/u.test(ch);
+  const isIdentifierPart = (ch) => typeof ch === 'string' && /^[\p{ID_Continue}$‌‍]$/u.test(ch);
+  const readHex = (length) => {
+    const hex = text.slice(pos, pos + length);
+    if (hex.length !== length || !/^[0-9a-fA-F]+$/.test(hex)) fail(`转义需要 ${length} 位十六进制`);
+    pos += length;
+    return String.fromCharCode(parseInt(hex, 16));
+  };
+
+  const skipSpaceAndComments = () => {
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (/[\s﻿]/.test(ch)) { pos += 1; continue; }
+      if (ch === '/' && text[pos + 1] === '/') {
+        pos += 2;
+        while (pos < text.length && !isLineTerminator(text[pos])) pos += 1;
         continue;
       }
-      if (ch === '\\') { escaped = true; continue; }
-      if (quote === "'" && ch === '"') { out += '\\"'; continue; }
-      if (ch === quote) { out += '"'; inString = false; continue; }
-      out += ch;
-      continue;
+      if (ch === '/' && text[pos + 1] === '*') {
+        const end = text.indexOf('*/', pos + 2);
+        if (end === -1) fail('块注释 /* 没有闭合');
+        pos = end + 2;
+        continue;
+      }
+      break;
     }
-    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += '"'; continue; }
-    out += ch;
-  }
-  return out;
+  };
+
+  const parseString = () => {
+    const quote = text[pos];
+    pos += 1;
+    let out = '';
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (ch === quote) { pos += 1; return out; }
+      if (ch === '\n' || ch === '\r') fail('字符串没有闭合(中间出现了换行)');
+      if (ch !== '\\') { out += ch; pos += 1; continue; }
+      pos += 1;
+      if (pos >= text.length) break;
+      const esc = text[pos];
+      pos += 1;
+      if (esc === 'b') out += '\b';
+      else if (esc === 'f') out += '\f';
+      else if (esc === 'n') out += '\n';
+      else if (esc === 'r') out += '\r';
+      else if (esc === 't') out += '\t';
+      else if (esc === 'v') out += '\v';
+      else if (esc === 'x') out += readHex(2);
+      else if (esc === 'u') out += readHex(4);
+      else if (esc === '0') {
+        if (/[0-9]/.test(text[pos] || '')) fail('字符串里不允许八进制转义');
+        out += '\0';
+      } else if (/[1-9]/.test(esc)) {
+        fail('字符串里不允许八进制转义');
+      } else if (esc === '\r') {
+        // 反斜杠 + 换行 = 续行,换行本身不进字符串;\r\n 要一起吃掉
+        if (text[pos] === '\n') pos += 1;
+      } else if (!isLineTerminator(esc)) {
+        // \' \" \\ \/ 以及其他字符:JSON5 规定就是字符本身
+        out += esc;
+      }
+    }
+    return fail('字符串没有闭合');
+  };
+
+  const parseIdentifier = () => {
+    let out = '';
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (ch === '\\') {
+        if (text[pos + 1] !== 'u') fail('键名里只允许 \\u 转义');
+        pos += 2;
+        const decoded = readHex(4);
+        if (!(out ? isIdentifierPart(decoded) : isIdentifierStart(decoded))) fail('键名里有非法字符');
+        out += decoded;
+        continue;
+      }
+      if (!(out ? isIdentifierPart(ch) : isIdentifierStart(ch))) break;
+      out += ch;
+      pos += 1;
+    }
+    if (!out) fail('缺少键名(键名要么加引号,要么是合法的标识符)');
+    return out;
+  };
+
+  const parseNumber = () => {
+    numberRe.lastIndex = pos;
+    const match = numberRe.exec(text);
+    if (!match) fail('无法识别的值');
+    pos += match[0].length;
+    const raw = match[0];
+    const sign = raw[0] === '-' ? -1 : 1;
+    const body = raw[0] === '+' || raw[0] === '-' ? raw.slice(1) : raw;
+    if (body === 'Infinity') return sign * Infinity;
+    if (body === 'NaN') return NaN;
+    if (body[0] === '0' && (body[1] === 'x' || body[1] === 'X')) return sign * parseInt(body.slice(2), 16);
+    return sign * Number(body);
+  };
+
+  const matchLiteral = (word) => {
+    if (!text.startsWith(word, pos) || isIdentifierPart(text[pos + word.length])) return false;
+    pos += word.length;
+    return true;
+  };
+
+  const parseValue = (depth) => {
+    if (depth > 500) fail('嵌套层级过深');
+    skipSpaceAndComments();
+    if (pos >= text.length) fail('内容意外结束');
+    const ch = text[pos];
+    if (ch === '{') return parseObject(depth + 1);
+    if (ch === '[') return parseArray(depth + 1);
+    if (ch === '"' || ch === "'") return parseString();
+    if (matchLiteral('true')) return true;
+    if (matchLiteral('false')) return false;
+    if (matchLiteral('null')) return null;
+    return parseNumber();
+  };
+
+  const parseObject = (depth) => {
+    pos += 1;
+    const obj = {};
+    skipSpaceAndComments();
+    if (text[pos] === '}') { pos += 1; return obj; }
+    while (true) {
+      skipSpaceAndComments();
+      const quote = text[pos];
+      const key = quote === '"' || quote === "'" ? parseString() : parseIdentifier();
+      skipSpaceAndComments();
+      if (text[pos] !== ':') fail('键名后面缺少冒号');
+      pos += 1;
+      const value = parseValue(depth);
+      // 与 JSON.parse 一致:__proto__ 作为普通自有属性,不能改掉对象原型
+      if (key === '__proto__') Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+      else obj[key] = value;
+      skipSpaceAndComments();
+      if (text[pos] === ',') {
+        pos += 1;
+        skipSpaceAndComments();
+        if (text[pos] === '}') { pos += 1; return obj; }
+        continue;
+      }
+      if (text[pos] === '}') { pos += 1; return obj; }
+      fail(pos >= text.length ? '对象没有闭合' : '对象里缺少逗号或右花括号');
+    }
+  };
+
+  const parseArray = (depth) => {
+    pos += 1;
+    const arr = [];
+    skipSpaceAndComments();
+    if (text[pos] === ']') { pos += 1; return arr; }
+    while (true) {
+      arr.push(parseValue(depth));
+      skipSpaceAndComments();
+      if (text[pos] === ',') {
+        pos += 1;
+        skipSpaceAndComments();
+        if (text[pos] === ']') { pos += 1; return arr; }
+        continue;
+      }
+      if (text[pos] === ']') { pos += 1; return arr; }
+      fail(pos >= text.length ? '数组没有闭合' : '数组里缺少逗号或右方括号');
+    }
+  };
+
+  const result = parseValue(0);
+  skipSpaceAndComments();
+  if (pos < text.length) fail('值后面还有多余内容');
+  return result;
 }
 
 function parseJsonLoose(raw) {
-  const trimmed = String(raw || '').trim();
-  if (!trimmed) throw new Error('empty input');
-  try { return JSON.parse(trimmed); } catch {}
-  const stripped = stripJson5(trimmed);
-  try { return JSON.parse(stripped); } catch {}
-  return JSON.parse(normalizeSingleQuotedStrings(stripped));
-}
-
-function readConfigLoose() {
-  try {
-    const file = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
-    if (!fs.existsSync(file)) return null;
-    const parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
+  const text = String(raw ?? '');
+  if (!text.trim()) throw new Error('empty input');
+  try { return JSON.parse(text); } catch {}
+  return parseJson5(text);
 }
 // ===== ocapi:json5-safe-read 结束 =====
 

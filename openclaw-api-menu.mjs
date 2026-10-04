@@ -14,10 +14,32 @@ const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.op
 // 工作目录不再写死 STATE_DIR/workspace。OpenClaw 允许用 agents.defaults.workspace
 // 改工作目录,写死会在该目录不存在时让 spawnSync 直接抛 ENOENT(看起来像没装 openclaw),
 // 技能也会被装错地方。这里改为运行时解析:优先配置里的值,读不到再回退 STATE_DIR/workspace。
+// 配置里常写成 ~/xxx:OpenClaw 自己会展开 ~,Node 不会。原样返回的话,技能安装会在当前目录
+// 建出一个名叫 "~" 的真目录(之后清理时一个手滑就成了 rm -rf ~),所以这里必须先展开 ~
+// 并转成绝对路径。相对路径按 openclaw.json 所在的 STATE_DIR 解析。
+function expandHomeDir(value) {
+  const text = String(value || '');
+  if (text === '~') return os.homedir();
+  if (text.startsWith('~/') || text.startsWith('~\\')) return path.join(os.homedir(), text.slice(2));
+  return text;
+}
+
 function resolveWorkspaceDir(cfg = null) {
   const configured = cfg?.agents?.defaults?.workspace;
-  if (typeof configured === 'string' && configured.trim()) return configured.trim();
+  if (typeof configured === 'string' && configured.trim()) {
+    return path.resolve(STATE_DIR, expandHomeDir(configured.trim()));
+  }
   return path.join(STATE_DIR, 'workspace');
+}
+
+// 给 openclaw 子命令用的 cwd:目录存在才指定,不存在(刚装完还没生成、或配置指向的目录被删了)
+// 就不传 cwd、沿用当前目录。spawnSync 遇到不存在的 cwd 会报 ENOENT,看起来像没装 openclaw。
+function getOpenClawCommandCwd() {
+  const dir = resolveWorkspaceDir(readConfigLoose());
+  try {
+    if (fs.statSync(dir).isDirectory()) return dir;
+  } catch {}
+  return undefined;
 }
 const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
@@ -66,6 +88,16 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.1.20',
+    updatedAt: '2026-10-04',
+    summary: [
+      'JSON5 读取改为逐字符解析器:支持不加引号的键名、单引号、注释、末尾逗号、十六进制等;不再先改写文本再解析,修复 v0.1.19 会把字符串里的 ", ]" / ", }" 改掉、并经同步写回配置的问题。',
+      '工作目录:展开 agents.defaults.workspace 里的 ~ 并转成绝对路径,修复技能安装会在当前目录建出名为 "~" 的目录;目录不存在时 openclaw 子命令不再指定 cwd,避免 ENOENT。',
+      '彻底卸载在"卸载失败但仍强制删除配置"的分支也会退出菜单,不再把删掉的文件重新建回来。',
+      '修改 API 时 Base URL 输错改为就地重输(输入 0 取消),在"同时修改全部"里不再丢掉已填写的新 ID 与显示名。',
+    ],
+  },
   {
     version: 'v0.1.19',
     updatedAt: '2026-10-04',
@@ -248,20 +280,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '兼容 OpenClaw 2026.8.2 Telegram SecretRef 和 Gateway 会话元数据。',
       '会话列表改用 Gateway sessions.list,恢复群聊、私聊名称及所属 Agent 显示。',
-    ],
-  },
-  {
-    version: 'v0.1.0',
-    updatedAt: '2026-09-01',
-    summary: [
-      '更新兼容OpenClaw 2026.8.1。'    ],
-  },
-  {
-    version: 'v0.0.99',
-    updatedAt: '2026-08-31',
-    summary: [
-      '会话菜单显示 agent 名称,避免 main 中的旧同名记录与 weather 实际会话混淆。',
-      'Telegram 会话模型切换通过 Gateway sessions.patch 写入,避免绕过 Gateway 缓存。',
     ],
   },
 ];
@@ -794,7 +812,7 @@ function readGatewaySessions(limit = 100) {
     '--params', JSON.stringify({ limit }),
     '--json',
   ], {
-    cwd: resolveWorkspaceDir(readConfigLoose()),
+    cwd: getOpenClawCommandCwd(),
     timeout: 10000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -852,7 +870,7 @@ function patchSessionModelViaGateway(sessionKey, ref) {
     '--params', JSON.stringify({ key: sessionKey, model: ref }),
     '--json',
   ], {
-    cwd: resolveWorkspaceDir(readConfigLoose()),
+    cwd: getOpenClawCommandCwd(),
     timeout: 15000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -903,7 +921,7 @@ function deleteTelegramSessionRecords(sessionKeys) {
   for (const row of rows) {
     const args = ['sessions', 'delete', row.key, '--yes', '--json'];
     if (row.agentId) args.push('--agent', row.agentId);
-    const result = runCommand('openclaw', args, { cwd: resolveWorkspaceDir(readConfigLoose()), timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
+    const result = runCommand('openclaw', args, { cwd: getOpenClawCommandCwd(), timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
     if (result.status === 0) deleted += 1;
     else failed.push(String(result.stderr || result.stdout || '官方会话删除失败').trim());
   }
@@ -2454,7 +2472,7 @@ async function fetchGatewayProviderModelIds(providerId) {
     'gateway', 'call', 'models.list',
     '--params', JSON.stringify({ view: 'configured', refresh: true }),
     '--json',
-  ], { cwd: resolveWorkspaceDir(readConfigLoose()), timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  ], { cwd: getOpenClawCommandCwd(), timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || 'Gateway models.list 调用失败').trim());
   const data = JSON.parse(String(result.stdout || '').trim() || '{}');
   const ids = [...new Set((Array.isArray(data?.models) ? data.models : [])
@@ -2575,94 +2593,216 @@ function normalizeModel(displayName, id, raw = null) {
 // ===== ocapi:model-meta 结束 =====
 
 // ===== ocapi:json5-safe-read 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
-// OpenClaw 配置是 JSON5(允许注释、末尾逗号、单引号字符串),但脚本用 JSON.parse 读会直接失败,
-// 导致加了注释的 openclaw.json 被误判为“损坏”,加/删/同步全部不可用。
-// 这里加一层容错解析:先试标准 JSON,失败再剥注释/尾逗号,最后再规范单引号字符串;仍失败才当真损坏。
-// 只用于读取,写入一律继续走 openclaw config patch,绝不回写文件、不动原格式。
-function stripJson5(raw) {
-  const text = String(raw || '');
-  let out = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (ch === '\n') { inLine = false; out += ch; }
-      continue;
-    }
-    if (inBlock) {
-      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
-      continue;
-    }
-    if (inString) {
-      out += ch;
-      if (escaped) { escaped = false; continue; }
-      if (ch === '\\') { escaped = true; continue; }
-      if (ch === quote) inString = false;
-      continue;
-    }
-    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
-    if (ch === '/' && next === '/') { inLine = true; i += 1; continue; }
-    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
-    out += ch;
-  }
-  // 去掉对象/数组里最后一个元素后的多余逗号
-  return out.replace(/,(\s*[}\]])/g, '$1');
-}
+// OpenClaw 的 openclaw.json 是 JSON5:允许注释、末尾逗号、单引号字符串、不加引号的键名、
+// 十六进制数等。只用 JSON.parse 读的话,手动加过一行注释就会被当成"损坏",加/删/同步全部不可用。
+// 先走 JSON.parse(标准 JSON 结果一字不差);失败再交给下面这个逐字符的 JSON5 解析器。
+// 读出来的值会经 openclaw config patch 写回(同步会整块写回 heartbeat、provider 等字段),
+// 所以解析必须精确,不能"先改写文本再 JSON.parse":那样会误改字符串里的内容(比如提示词里的 ", ]")。
+// 本段只解析、不改写文本;写入仍一律走 openclaw config patch,脚本不直接写 openclaw.json。
+// 全部写成函数声明、不用模块级常量:provider-manage.mjs 在本段之前就会调用 parseJsonLoose,
+// 函数声明会被提升,模块级 const 那时还在暂时性死区里。
+function parseJson5(source) {
+  const text = String(source);
+  let pos = 0;
+  const numberRe = /[+-]?(?:Infinity|NaN|0[xX][0-9a-fA-F]+|(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/y;
 
-// JSON5 允许单引号字符串。只在严格解析与前一步都失败时,才把单引号字符串规范成双引号。
-function normalizeSingleQuotedStrings(text) {
-  let out = '';
-  let inString = false;
-  let quote = '';
-  let escaped = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-        // 转义字符要重新判定:单引号串里的 \' 直接还原成 ',其余转义按原样保留
-        if (quote === "'" && ch === "'") { out += "'"; continue; }
-        if (quote === "'" && ch === '"') { out += '\\"'; continue; }
-        out += '\\' + ch;
+  const fail = (message) => {
+    const before = text.slice(0, pos);
+    const lineNo = before.split('\n').length;
+    const column = pos - before.lastIndexOf('\n');
+    throw new SyntaxError(`JSON5 解析失败(第 ${lineNo} 行第 ${column} 列):${message}`);
+  };
+  const isLineTerminator = (ch) => ch === '\n' || ch === '\r' || ch === ' ' || ch === ' ';
+  const isIdentifierStart = (ch) => typeof ch === 'string' && /^[\p{ID_Start}$_]$/u.test(ch);
+  const isIdentifierPart = (ch) => typeof ch === 'string' && /^[\p{ID_Continue}$‌‍]$/u.test(ch);
+  const readHex = (length) => {
+    const hex = text.slice(pos, pos + length);
+    if (hex.length !== length || !/^[0-9a-fA-F]+$/.test(hex)) fail(`转义需要 ${length} 位十六进制`);
+    pos += length;
+    return String.fromCharCode(parseInt(hex, 16));
+  };
+
+  const skipSpaceAndComments = () => {
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (/[\s﻿]/.test(ch)) { pos += 1; continue; }
+      if (ch === '/' && text[pos + 1] === '/') {
+        pos += 2;
+        while (pos < text.length && !isLineTerminator(text[pos])) pos += 1;
         continue;
       }
-      if (ch === '\\') { escaped = true; continue; }
-      if (quote === "'" && ch === '"') { out += '\\"'; continue; }
-      if (ch === quote) { out += '"'; inString = false; continue; }
-      out += ch;
-      continue;
+      if (ch === '/' && text[pos + 1] === '*') {
+        const end = text.indexOf('*/', pos + 2);
+        if (end === -1) fail('块注释 /* 没有闭合');
+        pos = end + 2;
+        continue;
+      }
+      break;
     }
-    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += '"'; continue; }
-    out += ch;
-  }
-  return out;
+  };
+
+  const parseString = () => {
+    const quote = text[pos];
+    pos += 1;
+    let out = '';
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (ch === quote) { pos += 1; return out; }
+      if (ch === '\n' || ch === '\r') fail('字符串没有闭合(中间出现了换行)');
+      if (ch !== '\\') { out += ch; pos += 1; continue; }
+      pos += 1;
+      if (pos >= text.length) break;
+      const esc = text[pos];
+      pos += 1;
+      if (esc === 'b') out += '\b';
+      else if (esc === 'f') out += '\f';
+      else if (esc === 'n') out += '\n';
+      else if (esc === 'r') out += '\r';
+      else if (esc === 't') out += '\t';
+      else if (esc === 'v') out += '\v';
+      else if (esc === 'x') out += readHex(2);
+      else if (esc === 'u') out += readHex(4);
+      else if (esc === '0') {
+        if (/[0-9]/.test(text[pos] || '')) fail('字符串里不允许八进制转义');
+        out += '\0';
+      } else if (/[1-9]/.test(esc)) {
+        fail('字符串里不允许八进制转义');
+      } else if (esc === '\r') {
+        // 反斜杠 + 换行 = 续行,换行本身不进字符串;\r\n 要一起吃掉
+        if (text[pos] === '\n') pos += 1;
+      } else if (!isLineTerminator(esc)) {
+        // \' \" \\ \/ 以及其他字符:JSON5 规定就是字符本身
+        out += esc;
+      }
+    }
+    return fail('字符串没有闭合');
+  };
+
+  const parseIdentifier = () => {
+    let out = '';
+    while (pos < text.length) {
+      const ch = text[pos];
+      if (ch === '\\') {
+        if (text[pos + 1] !== 'u') fail('键名里只允许 \\u 转义');
+        pos += 2;
+        const decoded = readHex(4);
+        if (!(out ? isIdentifierPart(decoded) : isIdentifierStart(decoded))) fail('键名里有非法字符');
+        out += decoded;
+        continue;
+      }
+      if (!(out ? isIdentifierPart(ch) : isIdentifierStart(ch))) break;
+      out += ch;
+      pos += 1;
+    }
+    if (!out) fail('缺少键名(键名要么加引号,要么是合法的标识符)');
+    return out;
+  };
+
+  const parseNumber = () => {
+    numberRe.lastIndex = pos;
+    const match = numberRe.exec(text);
+    if (!match) fail('无法识别的值');
+    pos += match[0].length;
+    const raw = match[0];
+    const sign = raw[0] === '-' ? -1 : 1;
+    const body = raw[0] === '+' || raw[0] === '-' ? raw.slice(1) : raw;
+    if (body === 'Infinity') return sign * Infinity;
+    if (body === 'NaN') return NaN;
+    if (body[0] === '0' && (body[1] === 'x' || body[1] === 'X')) return sign * parseInt(body.slice(2), 16);
+    return sign * Number(body);
+  };
+
+  const matchLiteral = (word) => {
+    if (!text.startsWith(word, pos) || isIdentifierPart(text[pos + word.length])) return false;
+    pos += word.length;
+    return true;
+  };
+
+  const parseValue = (depth) => {
+    if (depth > 500) fail('嵌套层级过深');
+    skipSpaceAndComments();
+    if (pos >= text.length) fail('内容意外结束');
+    const ch = text[pos];
+    if (ch === '{') return parseObject(depth + 1);
+    if (ch === '[') return parseArray(depth + 1);
+    if (ch === '"' || ch === "'") return parseString();
+    if (matchLiteral('true')) return true;
+    if (matchLiteral('false')) return false;
+    if (matchLiteral('null')) return null;
+    return parseNumber();
+  };
+
+  const parseObject = (depth) => {
+    pos += 1;
+    const obj = {};
+    skipSpaceAndComments();
+    if (text[pos] === '}') { pos += 1; return obj; }
+    while (true) {
+      skipSpaceAndComments();
+      const quote = text[pos];
+      const key = quote === '"' || quote === "'" ? parseString() : parseIdentifier();
+      skipSpaceAndComments();
+      if (text[pos] !== ':') fail('键名后面缺少冒号');
+      pos += 1;
+      const value = parseValue(depth);
+      // 与 JSON.parse 一致:__proto__ 作为普通自有属性,不能改掉对象原型
+      if (key === '__proto__') Object.defineProperty(obj, key, { value, enumerable: true, writable: true, configurable: true });
+      else obj[key] = value;
+      skipSpaceAndComments();
+      if (text[pos] === ',') {
+        pos += 1;
+        skipSpaceAndComments();
+        if (text[pos] === '}') { pos += 1; return obj; }
+        continue;
+      }
+      if (text[pos] === '}') { pos += 1; return obj; }
+      fail(pos >= text.length ? '对象没有闭合' : '对象里缺少逗号或右花括号');
+    }
+  };
+
+  const parseArray = (depth) => {
+    pos += 1;
+    const arr = [];
+    skipSpaceAndComments();
+    if (text[pos] === ']') { pos += 1; return arr; }
+    while (true) {
+      arr.push(parseValue(depth));
+      skipSpaceAndComments();
+      if (text[pos] === ',') {
+        pos += 1;
+        skipSpaceAndComments();
+        if (text[pos] === ']') { pos += 1; return arr; }
+        continue;
+      }
+      if (text[pos] === ']') { pos += 1; return arr; }
+      fail(pos >= text.length ? '数组没有闭合' : '数组里缺少逗号或右方括号');
+    }
+  };
+
+  const result = parseValue(0);
+  skipSpaceAndComments();
+  if (pos < text.length) fail('值后面还有多余内容');
+  return result;
 }
 
 function parseJsonLoose(raw) {
-  const trimmed = String(raw || '').trim();
-  if (!trimmed) throw new Error('empty input');
-  try { return JSON.parse(trimmed); } catch {}
-  const stripped = stripJson5(trimmed);
-  try { return JSON.parse(stripped); } catch {}
-  return JSON.parse(normalizeSingleQuotedStrings(stripped));
+  const text = String(raw ?? '');
+  if (!text.trim()) throw new Error('empty input');
+  try { return JSON.parse(text); } catch {}
+  return parseJson5(text);
 }
+// ===== ocapi:json5-safe-read 结束 =====
 
+// 主菜单专用(两个辅助脚本用不到,所以不放进上面三份同步的公共段):读取当前配置,失败返回 null。
 function readConfigLoose() {
   try {
-    const file = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
-    if (!fs.existsSync(file)) return null;
-    const parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
+    if (!fs.existsSync(CONFIG)) return null;
+    const parsed = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
-// ===== ocapi:json5-safe-read 结束 =====
 
 
 // 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
@@ -3303,19 +3443,22 @@ async function modifyProvider(ask) {
       }
       if (action === '3' || action === '5') {
         console.log('');
-        const input = await ask(color(`当前 Base URL： ${provider.baseUrl}\n请输入新的 Base URL（直接回车保持不变）：`, C.bold));
-        const typed = input.trim();
-        if (typed) {
-          // 添加 API 时会校验地址,修改这里以前直接存盘:漏写 http(s):// 也照写,
-          // 等自动同步才报错,坏地址已经进了配置。这里补同样的校验。
+        // 添加 API 时会校验地址,修改这里以前直接存盘:漏写 http(s):// 也照写,
+        // 等自动同步才报错,坏地址已经进了配置。这里补同样的校验。
+        // 输错就地重输,不 continue 回上一层:在"5 同时修改全部"里那样会把前面填好的新 ID / 显示名
+        // 一起丢掉。输入 0 才放弃本次修改(stdin 关闭时 ask 恒返回 '0',所以也不会死循环)。
+        let baseUrlCancelled = false;
+        while (true) {
+          const typed = (await ask(color(`当前 Base URL： ${provider.baseUrl}\n请输入新的 Base URL（直接回车保持不变，输入 0 取消）：`, C.bold))).trim();
+          if (!typed) { newBaseUrl = provider.baseUrl; break; }
+          if (typed === '0') { baseUrlCancelled = true; break; }
           const validated = normalizeAndValidateBaseUrl(typed);
-          if (!validated) {
-            warn('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
-            continue;
-          }
-          newBaseUrl = validated;
-        } else {
-          newBaseUrl = provider.baseUrl;
+          if (validated) { newBaseUrl = validated; break; }
+          warn('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
+        }
+        if (baseUrlCancelled) {
+          info('操作已取消。');
+          continue;
         }
       }
       if (action === '4' || action === '5') {
@@ -4957,7 +5100,10 @@ async function purgeOpenClaw(ask) {
   const forcedShortcutCleanup = removeOcapiShortcut();
   if (forcedShortcutCleanup.removed > 0) info('已从 shell 配置中移除失效的 ocapi 快捷命令。');
   warn('配置目录已强制删除,但程序卸载可能未完成,请手动检查 npm 卸载状态。');
+  info('菜单即将退出。');
   await backPrompt(ask);
+  // 与正常卸载成功的分支一样必须退出:配置目录已经删了,再回主菜单会把文件重新建回来。
+  return { exit: true };
 }
 
 async function repairHelperScripts(ask) {
