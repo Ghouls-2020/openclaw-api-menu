@@ -222,6 +222,97 @@ function normalizeModel(displayName, id, raw = null) {
 }
 // ===== ocapi:model-meta 结束 =====
 
+// ===== ocapi:json5-safe-read 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// OpenClaw 配置是 JSON5(允许注释、末尾逗号、单引号字符串),但脚本用 JSON.parse 读会直接失败,
+// 导致加了注释的 openclaw.json 被误判为“损坏”,加/删/同步全部不可用。
+// 这里加一层容错解析:先试标准 JSON,失败再剥注释/尾逗号,最后再规范单引号字符串;仍失败才当真损坏。
+// 只用于读取,写入一律继续走 openclaw config patch,绝不回写文件、不动原格式。
+function stripJson5(raw) {
+  const text = String(raw || '');
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inLine) {
+      if (ch === '\n') { inLine = false; out += ch; }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
+    if (ch === '/' && next === '/') { inLine = true; i += 1; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
+    out += ch;
+  }
+  // 去掉对象/数组里最后一个元素后的多余逗号
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+// JSON5 允许单引号字符串。只在严格解析与前一步都失败时,才把单引号字符串规范成双引号。
+function normalizeSingleQuotedStrings(text) {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        // 转义字符要重新判定:单引号串里的 \' 直接还原成 ',其余转义按原样保留
+        if (quote === "'" && ch === "'") { out += "'"; continue; }
+        if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+        out += '\\' + ch;
+        continue;
+      }
+      if (ch === '\\') { escaped = true; continue; }
+      if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+      if (ch === quote) { out += '"'; inString = false; continue; }
+      out += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += '"'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+function parseJsonLoose(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) throw new Error('empty input');
+  try { return JSON.parse(trimmed); } catch {}
+  const stripped = stripJson5(trimmed);
+  try { return JSON.parse(stripped); } catch {}
+  return JSON.parse(normalizeSingleQuotedStrings(stripped));
+}
+
+function readConfigLoose() {
+  try {
+    const file = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
+    if (!fs.existsSync(file)) return null;
+    const parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+// ===== ocapi:json5-safe-read 结束 =====
+
+
 function inferProviderDisplayName(provider, fallback = '') {
   if (Array.isArray(provider?.models) && typeof provider.models[0]?.name === 'string') {
     const inferred = String(provider.models[0].name).split(' / ')[0].trim();
@@ -246,7 +337,7 @@ function findProviderDisplayNameConflict(name, providers = {}, displayNames = {}
   return null;
 }
 
-let cfg; try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { console.error('配置 JSON 损坏,无法读取。'); process.exit(1); }
+let cfg; try { cfg = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8')); } catch { console.error('配置 JSON 损坏,无法读取。'); process.exit(1); }
 if (!cfg.models) cfg.models = {};
 if (!cfg.models.providers) cfg.models.providers = {};
 const displayNames = ensureJsonFile(DISPLAY_NAMES, {});

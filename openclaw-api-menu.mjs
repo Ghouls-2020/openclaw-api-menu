@@ -11,9 +11,14 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 // 统一状态目录:全部脚本共用同一套 OPENCLAW_STATE_DIR,避免主菜单与子脚本读写不同配置。
 const STATE_DIR = process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw');
-// 别用 __dirname/.. 推 workspace:脚本被挪进 scripts/ocapi/ 之后,这么算会落在
-// workspace/scripts 上而不是 workspace。统一从 STATE_DIR 推,跟 getWorkspaceSkillsDir 一致。
-const WORKSPACE = path.join(STATE_DIR, 'workspace');
+// 工作目录不再写死 STATE_DIR/workspace。OpenClaw 允许用 agents.defaults.workspace
+// 改工作目录,写死会在该目录不存在时让 spawnSync 直接抛 ENOENT(看起来像没装 openclaw),
+// 技能也会被装错地方。这里改为运行时解析:优先配置里的值,读不到再回退 STATE_DIR/workspace。
+function resolveWorkspaceDir(cfg = null) {
+  const configured = cfg?.agents?.defaults?.workspace;
+  if (typeof configured === 'string' && configured.trim()) return configured.trim();
+  return path.join(STATE_DIR, 'workspace');
+}
 const CONFIG = path.join(STATE_DIR, 'openclaw.json');
 const DISPLAY_NAMES = path.join(__dirname, 'provider-display-names.json');
 const RECENT_MODELS = path.join(__dirname, 'recent-models.json');
@@ -61,6 +66,16 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.1.19',
+    updatedAt: '2026-10-04',
+    summary: [
+      '修复 openclaw.json 含 JSON5 写法(注释 / 末尾多余逗号)时整个菜单不可用:三个脚本读配置改为容错解析,先试标准 JSON,失败再剥离注释与尾逗号重试,仍失败才当真损坏。写入仍走 openclaw config patch,绝不回写、不改原格式。',
+      '修复“彻底卸载”成功后菜单不退出:删完 ~/.openclaw 后主循环还会刷新主菜单,经 ensureJsonFile 把脚本目录和 ~/.openclaw 重新建回来。现在成功后交回主循环真正 break 退出。',
+      '修复“修改 API”改 Base URL 不校验格式:漏写 http(s):// 也照写进配置,等自动同步才报错。现在与添加 API 一致,无效地址当场提示重输。',
+      '修复工作目录写死 STATE_DIR/workspace:改过 agents.defaults.workspace 后,会话列表/切模型/删会话/models.list 与技能目录都会指错,spawnSync 报 ENOENT 像没装 openclaw。现在运行时从配置解析,回退 STATE_DIR/workspace。',
+    ],
+  },
   {
     version: 'v0.1.18',
     updatedAt: '2026-10-01',
@@ -779,7 +794,7 @@ function readGatewaySessions(limit = 100) {
     '--params', JSON.stringify({ limit }),
     '--json',
   ], {
-    cwd: WORKSPACE,
+    cwd: resolveWorkspaceDir(readConfigLoose()),
     timeout: 10000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -837,7 +852,7 @@ function patchSessionModelViaGateway(sessionKey, ref) {
     '--params', JSON.stringify({ key: sessionKey, model: ref }),
     '--json',
   ], {
-    cwd: WORKSPACE,
+    cwd: resolveWorkspaceDir(readConfigLoose()),
     timeout: 15000,
     maxBuffer: 8 * 1024 * 1024,
   });
@@ -888,7 +903,7 @@ function deleteTelegramSessionRecords(sessionKeys) {
   for (const row of rows) {
     const args = ['sessions', 'delete', row.key, '--yes', '--json'];
     if (row.agentId) args.push('--agent', row.agentId);
-    const result = runCommand('openclaw', args, { cwd: WORKSPACE, timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
+    const result = runCommand('openclaw', args, { cwd: resolveWorkspaceDir(readConfigLoose()), timeout: 20000, maxBuffer: 2 * 1024 * 1024 });
     if (result.status === 0) deleted += 1;
     else failed.push(String(result.stderr || result.stdout || '官方会话删除失败').trim());
   }
@@ -1176,7 +1191,7 @@ function danger(msg) {
 function readJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parseJsonLoose(fs.readFileSync(file, 'utf8'));
   } catch {
     return fallback;
   }
@@ -1216,7 +1231,7 @@ function ensureJsonFile(file, fallback, options = {}) {
     }
     let parsed;
     try {
-      parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
     } catch (err) {
       const corruptPath = `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
       try { fs.copyFileSync(file, corruptPath); } catch {}
@@ -1279,7 +1294,7 @@ function ensureConfigSkeleton() {
     created = true;
   } else {
     try {
-      const parsed = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+      const parsed = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8'));
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
         corrupted = true;
         cfg = null;
@@ -1343,7 +1358,7 @@ function getWorkspaceCfg(options = {}) {
 }
 
 function getWorkspaceSkillsDir() {
-  return path.join(STATE_DIR, 'workspace', 'skills');
+  return path.join(resolveWorkspaceDir(readConfigLoose()), 'skills');
 }
 
 function normalizeSkillDescription(skillName, rawDescription = '') {
@@ -2439,7 +2454,7 @@ async function fetchGatewayProviderModelIds(providerId) {
     'gateway', 'call', 'models.list',
     '--params', JSON.stringify({ view: 'configured', refresh: true }),
     '--json',
-  ], { cwd: WORKSPACE, timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
+  ], { cwd: resolveWorkspaceDir(readConfigLoose()), timeout: 30000, maxBuffer: 8 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(String(result.stderr || result.stdout || 'Gateway models.list 调用失败').trim());
   const data = JSON.parse(String(result.stdout || '').trim() || '{}');
   const ids = [...new Set((Array.isArray(data?.models) ? data.models : [])
@@ -2558,6 +2573,97 @@ function normalizeModel(displayName, id, raw = null) {
   return model;
 }
 // ===== ocapi:model-meta 结束 =====
+
+// ===== ocapi:json5-safe-read 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// OpenClaw 配置是 JSON5(允许注释、末尾逗号、单引号字符串),但脚本用 JSON.parse 读会直接失败,
+// 导致加了注释的 openclaw.json 被误判为“损坏”,加/删/同步全部不可用。
+// 这里加一层容错解析:先试标准 JSON,失败再剥注释/尾逗号,最后再规范单引号字符串;仍失败才当真损坏。
+// 只用于读取,写入一律继续走 openclaw config patch,绝不回写文件、不动原格式。
+function stripJson5(raw) {
+  const text = String(raw || '');
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inLine) {
+      if (ch === '\n') { inLine = false; out += ch; }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
+    if (ch === '/' && next === '/') { inLine = true; i += 1; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
+    out += ch;
+  }
+  // 去掉对象/数组里最后一个元素后的多余逗号
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+// JSON5 允许单引号字符串。只在严格解析与前一步都失败时,才把单引号字符串规范成双引号。
+function normalizeSingleQuotedStrings(text) {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        // 转义字符要重新判定:单引号串里的 \' 直接还原成 ',其余转义按原样保留
+        if (quote === "'" && ch === "'") { out += "'"; continue; }
+        if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+        out += '\\' + ch;
+        continue;
+      }
+      if (ch === '\\') { escaped = true; continue; }
+      if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+      if (ch === quote) { out += '"'; inString = false; continue; }
+      out += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += '"'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+function parseJsonLoose(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) throw new Error('empty input');
+  try { return JSON.parse(trimmed); } catch {}
+  const stripped = stripJson5(trimmed);
+  try { return JSON.parse(stripped); } catch {}
+  return JSON.parse(normalizeSingleQuotedStrings(stripped));
+}
+
+function readConfigLoose() {
+  try {
+    const file = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
+    if (!fs.existsSync(file)) return null;
+    const parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+// ===== ocapi:json5-safe-read 结束 =====
+
 
 // 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
 const FABRICATED_CONTEXT_WINDOW = 1048576;
@@ -3198,7 +3304,19 @@ async function modifyProvider(ask) {
       if (action === '3' || action === '5') {
         console.log('');
         const input = await ask(color(`当前 Base URL： ${provider.baseUrl}\n请输入新的 Base URL（直接回车保持不变）：`, C.bold));
-        newBaseUrl = input.trim() ? input.trim() : provider.baseUrl;
+        const typed = input.trim();
+        if (typed) {
+          // 添加 API 时会校验地址,修改这里以前直接存盘:漏写 http(s):// 也照写,
+          // 等自动同步才报错,坏地址已经进了配置。这里补同样的校验。
+          const validated = normalizeAndValidateBaseUrl(typed);
+          if (!validated) {
+            warn('Base URL 格式无效,请输入以 http:// 或 https:// 开头的完整 URL。');
+            continue;
+          }
+          newBaseUrl = validated;
+        } else {
+          newBaseUrl = provider.baseUrl;
+        }
       }
       if (action === '4' || action === '5') {
         console.log('');
@@ -4816,7 +4934,9 @@ async function purgeOpenClaw(ask) {
     success('OpenClaw 已彻底卸载。');
     info('程序、本地配置、数据和 Gateway 服务残留均已处理。');
     info('菜单即将退出。');
-    return;
+    // 交回主循环让它 break:成功后必须真正退出,否则下一轮 printMainMenu 会经
+    // ensureJsonFile 把刚删掉的脚本目录(以及 ~/.openclaw)重新建回来。
+    return { exit: true };
   }
   // 卸载失败(或程序仍存在):不再自动删配置,改为询问用户。
   warn('OpenClaw 卸载失败或程序仍存在,默认不会删除配置/Token/Session。');
@@ -5165,7 +5285,13 @@ async function showMenu() {
         else if (finalChoice === '15') await restartGateway(ask);
         else if (finalChoice === '16') await backupOpenClaw(ask);
         else if (finalChoice === '17') await uninstallOpenClaw(ask);
-        else if (finalChoice === '18') await purgeOpenClaw(ask);
+        else if (finalChoice === '18') {
+          const purgeResult = await purgeOpenClaw(ask);
+          if (purgeResult?.exit) {
+            success('已退出。');
+            break;
+          }
+        }
         else if (finalChoice === '19') await diagnoseGatewayQuick(ask);
         else if (finalChoice === '20') await showScriptVersionDetail(ask);
         else if (finalChoice === '21') await repairHelperScripts(ask);

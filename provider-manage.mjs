@@ -136,7 +136,7 @@ function sizeGuardFloorBytes() {
 // 官方写盘就是 JSON.stringify(cfg, null, 2) + '\n'，所以这个估算与实际一致。
 function projectTrimmedBytes(providerId, keepCount) {
   let live;
-  try { live = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch { return null; }
+  try { live = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8')); } catch { return null; }
   const item = live?.models?.providers?.[providerId];
   if (!item || !Array.isArray(item.models)) return null;
   item.models = item.models.slice(0, keepCount);
@@ -147,7 +147,7 @@ function projectTrimmedBytes(providerId, keepCount) {
 function trimProviderModelsStepwise(providerId) {
   for (let step = 1; step <= 40; step += 1) {
     let live;
-    try { live = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch {
+    try { live = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8')); } catch {
       console.error(`分步删除 ${providerId}: 配置读取失败。`);
       return false;
     }
@@ -192,7 +192,7 @@ function trimProviderModelsStepwise(providerId) {
 }
 
 let cfg;
-try { cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8')); } catch (err) {
+try { cfg = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8')); } catch (err) {
   console.error(`OpenClaw 配置文件损坏或无法解析: ${CONFIG}`);
   process.exit(1);
 }
@@ -562,6 +562,97 @@ function normalizeModel(displayName, id, raw = null) {
 }
 // ===== ocapi:model-meta 结束 =====
 
+// ===== ocapi:json5-safe-read 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// OpenClaw 配置是 JSON5(允许注释、末尾逗号、单引号字符串),但脚本用 JSON.parse 读会直接失败,
+// 导致加了注释的 openclaw.json 被误判为“损坏”,加/删/同步全部不可用。
+// 这里加一层容错解析:先试标准 JSON,失败再剥注释/尾逗号,最后再规范单引号字符串;仍失败才当真损坏。
+// 只用于读取,写入一律继续走 openclaw config patch,绝不回写文件、不动原格式。
+function stripJson5(raw) {
+  const text = String(raw || '');
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  let inLine = false;
+  let inBlock = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (inLine) {
+      if (ch === '\n') { inLine = false; out += ch; }
+      continue;
+    }
+    if (inBlock) {
+      if (ch === '*' && next === '/') { inBlock = false; i += 1; }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
+    if (ch === '/' && next === '/') { inLine = true; i += 1; continue; }
+    if (ch === '/' && next === '*') { inBlock = true; i += 1; continue; }
+    out += ch;
+  }
+  // 去掉对象/数组里最后一个元素后的多余逗号
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+// JSON5 允许单引号字符串。只在严格解析与前一步都失败时,才把单引号字符串规范成双引号。
+function normalizeSingleQuotedStrings(text) {
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        // 转义字符要重新判定:单引号串里的 \' 直接还原成 ',其余转义按原样保留
+        if (quote === "'" && ch === "'") { out += "'"; continue; }
+        if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+        out += '\\' + ch;
+        continue;
+      }
+      if (ch === '\\') { escaped = true; continue; }
+      if (quote === "'" && ch === '"') { out += '\\"'; continue; }
+      if (ch === quote) { out += '"'; inString = false; continue; }
+      out += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += '"'; continue; }
+    out += ch;
+  }
+  return out;
+}
+
+function parseJsonLoose(raw) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) throw new Error('empty input');
+  try { return JSON.parse(trimmed); } catch {}
+  const stripped = stripJson5(trimmed);
+  try { return JSON.parse(stripped); } catch {}
+  return JSON.parse(normalizeSingleQuotedStrings(stripped));
+}
+
+function readConfigLoose() {
+  try {
+    const file = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), 'openclaw.json');
+    if (!fs.existsSync(file)) return null;
+    const parsed = parseJsonLoose(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+// ===== ocapi:json5-safe-read 结束 =====
+
+
 // 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
 const FABRICATED_CONTEXT_WINDOW = 1048576;
 const FABRICATED_MAX_TOKENS = 128000;
@@ -771,7 +862,7 @@ if (action === 'remove') {
     // 若是"模型已清空但 provider 本体没删掉"的半成品态:配置依然有效,重跑一次即可
     let partial = false;
     try {
-      const live = JSON.parse(fs.readFileSync(CONFIG, 'utf8'));
+      const live = parseJsonLoose(fs.readFileSync(CONFIG, 'utf8'));
       const item = live?.models?.providers?.[providerName];
       partial = Boolean(item) && (!Array.isArray(item.models) || item.models.length === 0);
     } catch {}
