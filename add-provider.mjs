@@ -171,6 +171,33 @@ function clearProviderModelRefs(modelMap, providerName) {
 }
 
 
+// ===== ocapi:provider-fetch-headers 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// 部分中转站(如 agentrouter.org)对 User-Agent 做白名单:undici/curl/node 默认 UA 会被判成
+// "unauthorized client" 直接 401,连 API Key 都不看——只看状态码会把这种情况误报成"Key 无效/认证失败"。
+// 历史上探测写死 Mozilla/5.0 BatchApiCheck/1.0 这种编出来的假浏览器 UA,同样过不了白名单。
+// 规则:provider.headers 里声明的头优先(用户为该 Provider 显式配过就照配,比如厂商要求的 UA);
+// 没声明 UA 时兜底下面这个值;脚本自用的必需头(Authorization/Content-Type/Accept)最后覆盖,
+// 避免 provider.headers 里误填的同名字段顶掉认证或请求格式。
+function resolveProviderFetchHeaders(provider, extra = {}) {
+  const declared = provider && typeof provider === 'object' && provider.headers
+    && typeof provider.headers === 'object' && !Array.isArray(provider.headers)
+    ? provider.headers
+    : {};
+  const headers = {};
+  for (const [key, value] of Object.entries(declared)) {
+    if (value === null || value === undefined) continue;
+    headers[String(key)] = String(value);
+  }
+  const hasUserAgent = Object.keys(headers).some((key) => key.toLowerCase() === 'user-agent' && String(headers[key]).trim());
+  if (!hasUserAgent) headers['User-Agent'] = 'openclaw/api-menu';
+  for (const [key, value] of Object.entries(extra)) {
+    if (value === null || value === undefined) continue;
+    headers[String(key)] = value;
+  }
+  return headers;
+}
+// ===== ocapi:provider-fetch-headers 结束 =====
+
 // ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
 // 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
 // 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
@@ -515,10 +542,11 @@ const controller = new AbortController();
 const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 try {
   res = await fetch(modelsUrl, {
-    headers: {
+    // 新建 Provider 时配置里还没有 headers,这里只靠兜底 UA 过白名单站点的反爬。
+    headers: resolveProviderFetchHeaders(cfg?.models?.providers?.[providerName], {
       Authorization: `Bearer ${apiKey}`,
       Accept: 'application/json',
-    },
+    }),
     signal: controller.signal,
   });
 } catch (err) {

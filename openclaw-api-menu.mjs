@@ -57,7 +57,6 @@ const PROVIDER_STATUS_TIMEOUT_MS = 8000;
 const CONFIG_PATCH_TIMEOUT_MS = 30000;
 const MODEL_STATUS_RETRY_TIMEOUT_MS = 12000;
 const MODEL_STATUS_DEFAULT_PROMPT = '用一句话说明 HTTPS 比 HTTP 多了什么。';
-const MODEL_STATUS_USER_AGENT = 'Mozilla/5.0 BatchApiCheck/1.0';
 const MODEL_STATUS_FALLBACK_ENDPOINTS = ['chat/completions', 'responses'];
 const MODEL_STATUS_CACHE_SCHEMA = 'v7';
 const LATEST_VERSION_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
@@ -88,6 +87,15 @@ const modelStatusCache = new Map();
 // ---------------------------------------
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
+  {
+    version: 'v0.1.21',
+    updatedAt: '2026-10-15',
+    summary: [
+      '修复 Provider 状态探测/模型同步/添加 API 时报 HTTP 401「认证失败/API Key无效」:请求不带 User-Agent(undici 默认 UA)会被 agentrouter.org 这类中转站的 UA 白名单判成 unauthorized client 直接拒绝,与 API Key 对错无关。现在优先带 provider.headers 里声明的头,未声明 UA 时兜底 openclaw/api-menu。',
+      '新增共享代码块 ocapi:provider-fetch-headers(三脚本一致):拼接请求头时脚本自用的必需头(Authorization/Content-Type/Accept)最后覆盖,避免 provider.headers 里误填的同名字段顶掉认证或请求格式。',
+      '探测/同步不再写死假浏览器 UA(Mozilla/5.0 BatchApiCheck/1.0),该值同样过不了白名单站点。',
+    ],
+  },
   {
     version: 'v0.1.20',
     updatedAt: '2026-10-04',
@@ -272,14 +280,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '修复 Provider 同步误清空 agents.defaults.mediaModels。',
       '修复彻底卸载状态判断和 stdin EOF 输入崩溃。',
-    ],
-  },
-  {
-    version: 'v0.1.1',
-    updatedAt: '2026-09-02',
-    summary: [
-      '兼容 OpenClaw 2026.8.2 Telegram SecretRef 和 Gateway 会话元数据。',
-      '会话列表改用 Gateway sessions.list,恢复群聊、私聊名称及所属 Agent 显示。',
     ],
   },
 ];
@@ -1587,6 +1587,33 @@ function explainHttpStatus(status) {
   return '';
 }
 
+// ===== ocapi:provider-fetch-headers 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
+// 部分中转站(如 agentrouter.org)对 User-Agent 做白名单:undici/curl/node 默认 UA 会被判成
+// "unauthorized client" 直接 401,连 API Key 都不看——只看状态码会把这种情况误报成"Key 无效/认证失败"。
+// 历史上探测写死 Mozilla/5.0 BatchApiCheck/1.0 这种编出来的假浏览器 UA,同样过不了白名单。
+// 规则:provider.headers 里声明的头优先(用户为该 Provider 显式配过就照配,比如厂商要求的 UA);
+// 没声明 UA 时兜底下面这个值;脚本自用的必需头(Authorization/Content-Type/Accept)最后覆盖,
+// 避免 provider.headers 里误填的同名字段顶掉认证或请求格式。
+function resolveProviderFetchHeaders(provider, extra = {}) {
+  const declared = provider && typeof provider === 'object' && provider.headers
+    && typeof provider.headers === 'object' && !Array.isArray(provider.headers)
+    ? provider.headers
+    : {};
+  const headers = {};
+  for (const [key, value] of Object.entries(declared)) {
+    if (value === null || value === undefined) continue;
+    headers[String(key)] = String(value);
+  }
+  const hasUserAgent = Object.keys(headers).some((key) => key.toLowerCase() === 'user-agent' && String(headers[key]).trim());
+  if (!hasUserAgent) headers['User-Agent'] = 'openclaw/api-menu';
+  for (const [key, value] of Object.entries(extra)) {
+    if (value === null || value === undefined) continue;
+    headers[String(key)] = value;
+  }
+  return headers;
+}
+// ===== ocapi:provider-fetch-headers 结束 =====
+
 function formatHttpStatusError(status) {
   const reason = explainHttpStatus(status);
   return reason ? `HTTP ${status} ${reason}` : `HTTP ${status}`;
@@ -1617,7 +1644,7 @@ async function detectProviderStatus(provider, providerId = '') {
     try {
       const res = await fetch(modelsUrl, {
         method: 'GET',
-        headers: { Authorization: `Bearer ${provider.apiKey}` },
+        headers: resolveProviderFetchHeaders(provider, { Authorization: `Bearer ${provider.apiKey}` }),
         signal: controller.signal,
       });
       const body = await res.text();
@@ -1932,12 +1959,11 @@ async function probeModelEndpoint(provider, modelId, endpoint, signal, options =
   const start = Date.now();
   const res = await fetch(url, {
     method: 'POST',
-    headers: {
+    headers: resolveProviderFetchHeaders(provider, {
       'Content-Type': 'application/json',
       Accept: endpoint === 'responses' ? 'application/json' : 'text/event-stream, application/json',
-      'User-Agent': MODEL_STATUS_USER_AGENT,
       Authorization: `Bearer ${provider.apiKey}`,
-    },
+    }),
     body: JSON.stringify(buildModelProbePayload(endpoint, modelId, promptText)),
     signal,
   });
@@ -2512,10 +2538,10 @@ async function fetchProviderModelCatalog(provider, providerId = '') {
   const timeoutId = setTimeout(() => controller.abort(), PROVIDER_SYNC_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(modelsUrl, {
-      headers: {
+      headers: resolveProviderFetchHeaders(provider, {
         Authorization: `Bearer ${provider.apiKey}`,
         Accept: 'application/json',
-      },
+      }),
       signal: controller.signal,
     });
     if (!res.ok) {
