@@ -88,6 +88,13 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.22',
+    updatedAt: '2026-10-16',
+    summary: [
+      '修复 provider.headers 同名头覆盖失效:HTTP 头不区分大小写,原实现只在检测 User-Agent 时忽略大小写,写入仍按原样键名,导致 provider.headers 里的 authorization/accept 等与脚本必需头作为两个键同时存在,被 Headers 合并成 "值1, 值2" 一起发出(服务端可能 400 或取到非预期值)。现在写头前先按大小写不敏感删掉同名键再写入;provider.headers 声明的头仍然优先。',
+    ],
+  },
+  {
     version: 'v0.1.21',
     updatedAt: '2026-10-15',
     summary: [
@@ -272,14 +279,6 @@ const MENU_VERSION_HISTORY = [
     summary: [
       '兼容 Provider apiKey SecretRef,通过 Gateway 解析模型目录。',
       '同步 Provider 时修复所有 agents.entries Agent 的失效模型引用。',
-    ],
-  },
-  {
-    version: 'v0.1.2',
-    updatedAt: '2026-09-03',
-    summary: [
-      '修复 Provider 同步误清空 agents.defaults.mediaModels。',
-      '修复彻底卸载状态判断和 stdin EOF 输入崩溃。',
     ],
   },
 ];
@@ -1594,21 +1593,31 @@ function explainHttpStatus(status) {
 // 规则:provider.headers 里声明的头优先(用户为该 Provider 显式配过就照配,比如厂商要求的 UA);
 // 没声明 UA 时兜底下面这个值;脚本自用的必需头(Authorization/Content-Type/Accept)最后覆盖,
 // 避免 provider.headers 里误填的同名字段顶掉认证或请求格式。
+// 同名判定按大小写不敏感(HTTP 头本身不区分大小写):写新头前先删掉已有的同名键,
+// 否则 authorization 与 Authorization 会作为两个键同时存在,被 Headers 拼成 "值1, 值2" 一起发出去。
 function resolveProviderFetchHeaders(provider, extra = {}) {
   const declared = provider && typeof provider === 'object' && provider.headers
     && typeof provider.headers === 'object' && !Array.isArray(provider.headers)
     ? provider.headers
     : {};
   const headers = {};
+  const setHeader = (key, value) => {
+    const name = String(key);
+    const lower = name.toLowerCase();
+    for (const existing of Object.keys(headers)) {
+      if (existing.toLowerCase() === lower) delete headers[existing];
+    }
+    headers[name] = value;
+  };
   for (const [key, value] of Object.entries(declared)) {
     if (value === null || value === undefined) continue;
-    headers[String(key)] = String(value);
+    setHeader(key, String(value));
   }
   const hasUserAgent = Object.keys(headers).some((key) => key.toLowerCase() === 'user-agent' && String(headers[key]).trim());
-  if (!hasUserAgent) headers['User-Agent'] = 'openclaw/api-menu';
+  if (!hasUserAgent) setHeader('User-Agent', 'openclaw/api-menu');
   for (const [key, value] of Object.entries(extra)) {
     if (value === null || value === undefined) continue;
-    headers[String(key)] = value;
+    setHeader(key, value);
   }
   return headers;
 }

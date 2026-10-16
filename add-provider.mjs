@@ -178,21 +178,31 @@ function clearProviderModelRefs(modelMap, providerName) {
 // 规则:provider.headers 里声明的头优先(用户为该 Provider 显式配过就照配,比如厂商要求的 UA);
 // 没声明 UA 时兜底下面这个值;脚本自用的必需头(Authorization/Content-Type/Accept)最后覆盖,
 // 避免 provider.headers 里误填的同名字段顶掉认证或请求格式。
+// 同名判定按大小写不敏感(HTTP 头本身不区分大小写):写新头前先删掉已有的同名键,
+// 否则 authorization 与 Authorization 会作为两个键同时存在,被 Headers 拼成 "值1, 值2" 一起发出去。
 function resolveProviderFetchHeaders(provider, extra = {}) {
   const declared = provider && typeof provider === 'object' && provider.headers
     && typeof provider.headers === 'object' && !Array.isArray(provider.headers)
     ? provider.headers
     : {};
   const headers = {};
+  const setHeader = (key, value) => {
+    const name = String(key);
+    const lower = name.toLowerCase();
+    for (const existing of Object.keys(headers)) {
+      if (existing.toLowerCase() === lower) delete headers[existing];
+    }
+    headers[name] = value;
+  };
   for (const [key, value] of Object.entries(declared)) {
     if (value === null || value === undefined) continue;
-    headers[String(key)] = String(value);
+    setHeader(key, String(value));
   }
   const hasUserAgent = Object.keys(headers).some((key) => key.toLowerCase() === 'user-agent' && String(headers[key]).trim());
-  if (!hasUserAgent) headers['User-Agent'] = 'openclaw/api-menu';
+  if (!hasUserAgent) setHeader('User-Agent', 'openclaw/api-menu');
   for (const [key, value] of Object.entries(extra)) {
     if (value === null || value === undefined) continue;
-    headers[String(key)] = value;
+    setHeader(key, value);
   }
   return headers;
 }
