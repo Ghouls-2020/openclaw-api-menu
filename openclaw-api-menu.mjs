@@ -88,6 +88,15 @@ const modelStatusCache = new Map();
 // 请输入你的选择: / 操作完成
 const MENU_VERSION_HISTORY = [
   {
+    version: 'v0.1.23',
+    updatedAt: '2026-10-17',
+    summary: [
+      '修复同步 Provider 时 Agent 条目(agents.entries)的模型引用修复结果被丢弃:该函数改为返回新对象而不原地改配置后,菜单只在 defaults 那处写回 nextCfg,entries 那处没写回——批量同步多个 Provider 时,后一个 Provider 重算拿到的是旧值,会把前一个刚修好的 Agent 条目覆盖掉。现在两处都显式写回。',
+      '修复 provider-manage.mjs 同步后不打印 Agent 条目级的修复明细:解构 repairAgentEntriesForSyncedProvider 的返回值时只取了 entries/warnings,messages 被丢掉,打印段虽然写了但永远拿不到数据(实跑验证时暴露:配置已经修对,终端却一片空白)。现在补上 messages 解构,默认区与条目区分开列出。',
+      '遍历修复消息时统一加空值保护,避免某一路径返回不含 messages 的结果时同步直接抛错中断。',
+    ],
+  },
+  {
     version: 'v0.1.22',
     updatedAt: '2026-10-16',
     summary: [
@@ -271,14 +280,6 @@ const MENU_VERSION_HISTORY = [
       '修复会话返回层级、删除失败原因被吞、重名会话无法区分。',
       '修复同步清理解析失效引用、SecretRef 白名单缺失、卸载判断。',
       '统一 /models URL 拼接,停止编造模型上下文/成本元数据。',
-    ],
-  },
-  {
-    version: 'v0.1.3',
-    updatedAt: '2026-09-03',
-    summary: [
-      '兼容 Provider apiKey SecretRef,通过 Gateway 解析模型目录。',
-      '同步 Provider 时修复所有 agents.entries Agent 的失效模型引用。',
     ],
   },
 ];
@@ -2392,8 +2393,9 @@ const MODEL_SELECTION_FIELDS = ['model', 'imageModel', 'pdfModel', 'audioModel',
 // 以前找不到 fallback 时会拿 /models 列表第一个模型顶上,那可能是嵌入/图像模型,
 // 默认模型会直接变成不能聊天的模型;现在原值保留,只给出警告,由用户自己换。
 function repairModelSelectionForSyncedProvider(config, providerName, validModelIds = []) {
-  const defaults = config.agents?.defaults;
-  if (!defaults) return { changed: false, messages: [], warnings: [] };
+  // 深拷贝:只返回修复结果,不改动调用方传入的配置对象(与 provider-manage.mjs 保持一致)。
+  let defaults; try { defaults = JSON.parse(JSON.stringify(config.agents?.defaults || {})); } catch { return { changed: false, messages: ['序列化配置失败，跳过修复。'], warnings: [], _nextDefaults: config.agents?.defaults || {} }; }
+  if (!defaults || Object.keys(defaults).length === 0) return { changed: false, messages: [], warnings: [], _nextDefaults: config.agents?.defaults || {} };
   const validIds = new Set(validModelIds);
   const messages = [];
   const warnings = [];
@@ -2526,7 +2528,7 @@ function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validMo
     warnings.push(...(result.warnings || []).map((message) => `${agentId}.${message}`));
     if (!result.changed) continue;
     repaired[agentId] = result._nextDefaults;
-    messages.push(...result.messages.map((message) => `${agentId}.${message}`));
+    messages.push(...(result.messages || []).map((message) => `${agentId}.${message}`));
   }
   return { entries: repaired, messages, warnings };
 }
@@ -3274,6 +3276,12 @@ async function syncAllProviders(ask) {
       nextCfg.models.providers[row.id] = providerPatch;
       for (const id of keptIds) keptModelLines.push(`${row.id}/${id}`);
       const repairedDefaults = repairModelSelectionForSyncedProvider(nextCfg, row.id, finalIds);
+      // 该函数不再原地改配置,修复结果必须显式写回 nextCfg;
+      // 后面 buildDefaultSelectionPatch(nextCfg.agents.defaults) 才拿得到修复后的值。
+      if (repairedDefaults.changed && repairedDefaults._nextDefaults) {
+        if (!nextCfg.agents) nextCfg.agents = {};
+        nextCfg.agents.defaults = repairedDefaults._nextDefaults;
+      }
       if (repairedDefaults.changed) {
         for (const msg of repairedDefaults.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
       }
@@ -3282,6 +3290,10 @@ async function syncAllProviders(ask) {
       for (const msg of repairedEntries.warnings) selectionWarningLines.push(`${row.id}: ${msg}`);
       if (Object.keys(repairedEntries.entries).length) {
         patchPayload.agents.entries = { ...(patchPayload.agents.entries || {}), ...repairedEntries.entries };
+        // 和 defaults 那处同理:修复结果不写回 nextCfg 的话,下一个 Provider 再算一遍时
+        // 拿到的还是旧值,会把前一个 Provider 刚修好的 Agent 条目又覆盖掉。
+        if (!nextCfg.agents) nextCfg.agents = {};
+        nextCfg.agents.entries = { ...(nextCfg.agents.entries || {}), ...repairedEntries.entries };
         for (const msg of repairedEntries.messages) repairedDefaultLines.push(`${row.id}: ${msg}`);
       }
       replacePaths.push(`models.providers.${row.id}.models`);

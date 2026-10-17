@@ -1038,13 +1038,16 @@ async function fetchGatewayProviderModelIds(providerId) {
 
 function repairAgentEntriesForSyncedProvider(entries = {}, providerName, validModelIds = []) {
   const repaired = {};
+  const messages = [];
   const warnings = [];
   for (const [agentId, entry] of Object.entries(entries || {})) {
     const result = repairModelSelectionForSyncedProvider({ agents: { defaults: entry } }, providerName, validModelIds);
-    if (result.changed) repaired[agentId] = result._nextDefaults;
     warnings.push(...(result.warnings || []).map((msg) => `${agentId}.${msg}`));
+    if (!result.changed) continue;
+    repaired[agentId] = result._nextDefaults;
+    messages.push(...(result.messages || []).map((msg) => `${agentId}.${msg}`));
   }
-  return { entries: repaired, warnings };
+  return { entries: repaired, messages, warnings };
 }
 
 if (action === 'sync') {
@@ -1079,7 +1082,7 @@ if (action === 'sync') {
     const defaultsPatch = buildDefaultSelectionPatch(repairedDefaults.changed ? repairedDefaults._nextDefaults : (cfg.agents?.defaults || {}), previousDefaults);
     const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
     if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
-    const { entries: repairedEntries, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
+    const { entries: repairedEntries, messages: entryMessages, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
     if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
     const patch = { models: { providers: { [providerName]: provider } }, agents: { defaults: defaultsPatch } };
     if (Object.keys(repairedEntries).length) patch.agents.entries = repairedEntries;
@@ -1093,7 +1096,13 @@ if (action === 'sync') {
     console.log(`Removed models: ${removedModels}`);
     if (repairedDefaults.changed) {
       console.log('Repaired default model refs:');
-      for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
+      for (const msg of repairedDefaults.messages || []) console.log(`- ${msg}`);
+    }
+    // Agent 条目级(agents.entries.<id>)的修复以前只算了不打印,用户看不到哪个 Agent 的
+    // 默认模型被换掉、哪些失效 fallback 被清掉。默认区与条目区分开列出。
+    if (entryMessages?.length) {
+      console.log('Repaired agent model refs:');
+      for (const msg of entryMessages) console.log(`- ${msg}`);
     }
     printSyncReferenceNotes(providerName, keptIds, [...(repairedDefaults.warnings || []), ...entryWarnings]);
     process.exit(0);
@@ -1182,7 +1191,7 @@ if (action === 'sync') {
   const modelPolicyAllow = addProviderToModelPolicy(previousDefaults, providerName);
   if (modelPolicyAllow) defaultsPatch.modelPolicy = { allow: modelPolicyAllow };
   if (Object.keys(modelRefPatch).length) defaultsPatch.models = modelRefPatch;
-  const { entries: repairedEntries, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
+  const { entries: repairedEntries, messages: entryMessages, warnings: entryWarnings } = repairAgentEntriesForSyncedProvider(cfg.agents?.entries, providerName, finalIds);
   console.error('正在写入配置，请稍等...');
   const patchRes = runConfigPatch({
     models: {
@@ -1210,7 +1219,11 @@ if (action === 'sync') {
   console.log(`Removed models: ${removed}`);
   if (repairedDefaults.changed) {
     console.log('Repaired default model refs:');
-    for (const msg of repairedDefaults.messages) console.log(`- ${msg}`);
+    for (const msg of repairedDefaults.messages || []) console.log(`- ${msg}`);
+  }
+  if (entryMessages?.length) {
+    console.log('Repaired agent model refs:');
+    for (const msg of entryMessages) console.log(`- ${msg}`);
   }
   printSyncReferenceNotes(providerName, keptIds, [...(repairedDefaults.warnings || []), ...entryWarnings]);
 }
