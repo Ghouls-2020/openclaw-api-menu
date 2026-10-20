@@ -549,10 +549,15 @@ function resolveProviderFetchHeaders(provider, extra = {}) {
 // ===== ocapi:provider-fetch-headers 结束 =====
 
 // ===== ocapi:model-meta 开始(三个脚本保持一致,改一处必须同步改另外两处)=====
-// 历史上这里写死 contextWindow=1M / maxTokens=128K / cost 全 0,等于给每个模型编了一份
-// 假规格:OpenClaw 按这些值决定历史裁剪和请求上限,写死大数会让超长请求直接被上游 400,
-// 成本恒 0 会让用量统计永远是 0。现在改成只写 /models 真给了的值,给不出就不写,
-// 让 OpenClaw 用它自己的默认值。
+// 模型规格统一口径(用户指定):一律写入 1048576 / 128000。
+// 不采用上游 /models 返回的 context_length / max_output_tokens:各家字段语义不一致
+// (有的回显的是「默认输出长度」而非上限),写错会直接影响历史裁剪和请求上限。
+// 要恢复「上游真值优先」,把 normalizeModel 里两行赋值改回 extractModelLimits 的返回值。
+// cost 仍然一律不写:pricing 各家口径不一(每 token / 每千 / 每百万、字符串、不同币种),
+// 猜错比不写更糟,成本恒 0 也会让用量统计失真。
+const DEFAULT_CONTEXT_WINDOW = 1048576;
+const DEFAULT_MAX_TOKENS = 128000;
+
 function pickFirstPositiveInt(...values) {
   for (const value of values) {
     const num = Number(value);
@@ -561,7 +566,8 @@ function pickFirstPositiveInt(...values) {
   return null;
 }
 
-// 从 /models 原始行里取真实上下文/输出上限;各家字段名不统一,按常见口径挨个试。
+// 从 /models 原始行里取上下文/输出上限。当前 normalizeModel 不采信上游值
+// (统一写 DEFAULT_*),本函数保留供将来恢复真实值探测时直接使用。
 // 不认 snake_case 的 max_tokens:它和请求参数同名,个别服务商在模型目录里回显的是
 // "默认输出长度"(如 4096)而不是上限,当成上限写进去反而会把输出压低。
 // 只认语义明确的 max_output_tokens / max_completion_tokens。
@@ -592,9 +598,9 @@ function normalizeModel(displayName, id, raw = null) {
     input: guessInputCaps(id),
     reasoning: true, // 用户指定:所有模型统一启用 reasoning,不按名称或上游声明区分。
   };
-  const { contextWindow, maxTokens } = extractModelLimits(raw);
-  if (contextWindow) model.contextWindow = contextWindow;
-  if (maxTokens) model.maxTokens = maxTokens;
+  // 所有模型统一这组默认值,不采信上游字段(用户指定)。
+  model.contextWindow = DEFAULT_CONTEXT_WINDOW;
+  model.maxTokens = DEFAULT_MAX_TOKENS;
   return model;
 }
 // ===== ocapi:model-meta 结束 =====
@@ -801,10 +807,6 @@ function parseJsonLoose(raw) {
 // ===== ocapi:json5-safe-read 结束 =====
 
 
-// 脚本历史上自己写死过的占位规格。它们不是手工值,合并时要丢掉而不是保留。
-const FABRICATED_CONTEXT_WINDOW = 1048576;
-const FABRICATED_MAX_TOKENS = 128000;
-
 // 全零成本同样是脚本编的,不是人工填的;人工填过的真实成本才保留。
 function isFabricatedCost(cost) {
   if (!cost || typeof cost !== 'object') return false;
@@ -826,14 +828,9 @@ function mergeModel(displayName, id, prev, raw = null) {
   if (Array.isArray(prev.input) && prev.input.length > 0) result.input = [...prev.input];
   // contextWindow / maxTokens / cost 一律"手工值优先":上游只用来补空,
   // 不覆盖人工填过的值。悄悄改掉用户的修正,正是这一版要修的那类问题。
-  // 唯一例外是脚本自己历史上写死的占位值(1M / 128K / 全零成本),那不算手工值,直接丢。
   // reasoning 统一使用 fresh 中的 true,不保留旧配置里的 false。
-  if (prev.contextWindow && prev.contextWindow !== FABRICATED_CONTEXT_WINDOW) {
-    result.contextWindow = prev.contextWindow;
-  }
-  if (prev.maxTokens && prev.maxTokens !== FABRICATED_MAX_TOKENS) {
-    result.maxTokens = prev.maxTokens;
-  }
+  if (prev.contextWindow) result.contextWindow = prev.contextWindow;
+  if (prev.maxTokens) result.maxTokens = prev.maxTokens;
   if (prev.cost && !isFabricatedCost(prev.cost)) result.cost = prev.cost;
   return result;
 }
@@ -1073,7 +1070,7 @@ if (action === 'sync') {
     const prevModels = buildPrevModelMap(provider.models);
     const { finalIds, keptIds } = withReferencedModels(cfg, providerName, ids, prevModels);
     // Gateway 的 models.list 只是回显本地配置,拿不到上游真实规格,所以不传 raw:
-    // 上下文/输出上限交给 mergeModel 的"保留手工值、丢弃写死占位值"规则处理。
+    // 上下文/输出上限交给 mergeModel 处理(手工值优先,其余回退到 DEFAULT_* 默认口径)。
     provider.models = finalIds.map(id => mergeModel(displayName, id, prevModels.get(id), null));
     const addedModels = ids.filter(id => !prevModels.has(id)).length;
     const removedModels = [...prevModels.keys()].filter(id => !finalIds.includes(id)).length;
